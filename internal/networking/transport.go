@@ -1,7 +1,6 @@
 package networking
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log"
@@ -12,9 +11,9 @@ import (
 )
 
 type Transport interface {
-	ListenAndAccept(ctx context.Context, addr string) error
+	ListenAndAccept(addr string) error
 	Consume() <-chan Request
-	Dial(ctx context.Context, addr string) (Peer, error)
+	Dial(addr string) (Peer, error)
 	Close() error
 }
 
@@ -152,7 +151,11 @@ func (op *OutboundPeer) Close() error {
 	defer op.pendingMu.Unlock()
 
 	err := ErrConnClosed{}
-	msg := errorMessage(err.code(), err.payload())
+	msg := &Message{
+		Type:    err.code(),
+		Payload: err.payload(),
+	}
+
 	for key, ch := range op.pending {
 		select {
 		case ch <- msg:
@@ -164,46 +167,53 @@ func (op *OutboundPeer) Close() error {
 }
 
 type TCPTransport struct {
+	closeDone sync.Once
+	done      chan struct{}
+
 	obMu          sync.Mutex
 	outboundPeers map[string]*OutboundPeer
 
-	listner      net.Listener
-	closeInbound context.CancelFunc
-	Messages     chan Request
-	streams      chan io.ReadCloser
+	Messages chan Request
+	streams  chan io.ReadCloser
 
 	wg sync.WaitGroup
 }
 
-func (t *TCPTransport) ListenAndAccept(ctx context.Context, addr string) error {
+func (t *TCPTransport) ListenAndAccept(addr string) error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 
-	t.listner = ln
-
-	inbCtx, closeInbound := context.WithCancel(ctx)
-	t.closeInbound = closeInbound
+	go func() {
+		<-t.done
+		ln.Close()
+	}()
 
 	for {
 
+		select {
+			case <-t.done:
+				return nil
+			default:
+		}
+		
 		conn, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 
 		t.wg.Add(1)
-		go t.readInbound(inbCtx, conn)
+		go t.readInbound(conn)
 	}
 }
 
 // TODO: Timeouts
-func (t *TCPTransport) readInbound(ctx context.Context, conn net.Conn) {
+func (t *TCPTransport) readInbound(conn net.Conn) {
 
-	defer conn.Close()
 	defer t.wg.Done()
+	defer conn.Close()
 
 	connection := &connection{conn: conn, mu: sync.Mutex{}}
 	pushMsg := func(msg *Message) {
@@ -213,14 +223,14 @@ func (t *TCPTransport) readInbound(ctx context.Context, conn net.Conn) {
 		}
 		select {
 		case t.Messages <- inb:
-		case <-ctx.Done():
+		case <-t.done:
 		}
 	}
 
-	t.read(ctx, connection, pushMsg)
+	t.read(connection, pushMsg)
 }
 
-func (t *TCPTransport) read(ctx context.Context, c *connection, pushMsg func(*Message)) {
+func (t *TCPTransport) read(c *connection, pushMsg func(*Message)) {
 
 	doneCh := make(chan struct{}, 1)
 	defer func() { doneCh <- struct{}{} }()
@@ -228,7 +238,7 @@ func (t *TCPTransport) read(ctx context.Context, c *connection, pushMsg func(*Me
 	go func() {
 		select {
 		case <-doneCh:
-		case <-ctx.Done():
+		case <-t.done:
 			c.conn.Close()
 		}
 	}()
@@ -240,13 +250,8 @@ func (t *TCPTransport) read(ctx context.Context, c *connection, pushMsg func(*Me
 
 		msg := &Message{}
 
-		err := validateProtocol(ctx, conn, msg)
+		err := validateProtocol(conn, msg)
 		if err != nil {
-
-			var protocErr ProtocolErr
-			if errors.As(err, &protocErr) {
-				go c.write(errorMessage(uint8(protocErr.code()), protocErr.payload()))
-			}
 
 			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
 			return
@@ -261,12 +266,17 @@ func (t *TCPTransport) read(ctx context.Context, c *connection, pushMsg func(*Me
 
 		default:
 
-			err := readPayload(ctx, conn, msg)
+			err := readPayload(conn, msg)
 			if err != nil {
 
 				var protocErr ProtocolErr
 				if errors.As(err, &protocErr) {
-					go c.write(errorMessage(uint8(protocErr.code()), protocErr.payload()))
+					c.write(&Message{
+						Flags:   0,
+						reqID:   msg.reqID,
+						Type:    uint8(protocErr.code()),
+						Payload: protocErr.payload(),
+					})
 				}
 
 				log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
@@ -279,7 +289,7 @@ func (t *TCPTransport) read(ctx context.Context, c *connection, pushMsg func(*Me
 }
 
 // dial gives an outbound peer.
-func (t *TCPTransport) Dial(ctx context.Context, addr string) (Peer, error) {
+func (t *TCPTransport) Dial(addr string) (Peer, error) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -302,15 +312,15 @@ func (t *TCPTransport) Dial(ctx context.Context, addr string) (Peer, error) {
 	peer := newOutboundPeer(conn)
 	t.outboundPeers[key] = peer
 	t.wg.Add(1)
-	go t.readOutbound(ctx, peer)
+	go t.readOutbound(peer)
 	return peer, nil
 }
 
-func (t *TCPTransport) readOutbound(ctx context.Context, peer *OutboundPeer) {
+func (t *TCPTransport) readOutbound(peer *OutboundPeer) {
 
 	defer t.wg.Done()
 
-	t.read(ctx, peer.connection, peer.pushMsg)
+	t.read(peer.connection, peer.pushMsg)
 
 	t.dropOutbound(peer.RemoteAddr())
 	peer.Close()
@@ -328,13 +338,7 @@ func (t *TCPTransport) Consume() <-chan Request {
 
 func (t *TCPTransport) Close() {
 
-	if t.closeInbound != nil {
-		t.closeInbound()
-	}
-
-	if t.listner != nil {
-		t.listner.Close()
-	}
+	t.closeDone.Do(func() { close(t.done) })
 
 	t.obMu.Lock()
 	for key, obp := range t.outboundPeers {

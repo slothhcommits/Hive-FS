@@ -2,7 +2,6 @@ package networking
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -60,15 +59,6 @@ type Message struct {
 	Flags   uint16
 	Type    uint8
 	Payload []byte
-}
-
-func errorMessage(msgType uint8, payload []byte) *Message {
-	return &Message{
-		Flags:   0,
-		reqID:   0,
-		Type:    msgType,
-		Payload: payload,
-	}
 }
 
 type ProtocolErr interface {
@@ -138,14 +128,10 @@ func writeFrame(conn io.ReadWriter, msg *Message) error {
 	return nil
 }
 
-func validateProtocol(ctx context.Context, conn io.ReadCloser, msg *Message) error {
+func validateProtocol(conn io.ReadCloser, msg *Message) error {
 
 	buf := make([]byte, offReqID+reqIDSize)
 	_, err := io.ReadFull(conn, buf)
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
 	
 	if err != nil {
 		return err
@@ -168,16 +154,12 @@ func validateProtocol(ctx context.Context, conn io.ReadCloser, msg *Message) err
 	return nil
 }
 
-func readPayload(ctx context.Context, conn io.ReadCloser, msg *Message) error {
+func readPayload(conn io.ReadCloser, msg *Message) error {
 
 	off := offType
 
 	buf := make([]byte, headerSize-off)
 	_, err := io.ReadFull(conn, buf)
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
 	
 	if err != nil {
 		return err
@@ -191,10 +173,6 @@ func readPayload(ctx context.Context, conn io.ReadCloser, msg *Message) error {
 
 	payload := make([]byte, payloadSize)
 	_, err = io.ReadFull(conn, payload); 
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
 	
 	if err != nil {
 		return err
