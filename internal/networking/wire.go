@@ -3,43 +3,46 @@ package networking
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
 
 /*
- 					8bytes	   1byte    2bytes 4bytes     1byte 4bytes
- frame structure : [magicByte][version][flag][requestId][type][length]Payload[checksum]
- 			       [0 1 2 3 4 5 6 7, 8, 9 10, 11 12 13 14, 15, 16 17 18 19]
+ 					4bytes	   1byte     1byte   4bytes      1byte      1byte   4bytes
+ frame structure : [magicByte] [version] [flags] [requestId] [msgFlags] [type] [length]      Payload [checksum]
+ 			       [0 1 2 3]   [4]       [5]     [6 7 8 9]   [10]       [11]   [12 13 14 15]
 */
 
-var magicByte = []byte{'0', 'x', 'H', 'i', 'v', 'e', 'F', 'S'} // 0xHiveFS
+var magicByte = []byte("HVFS")
 
 const (
 
 	// sizes in bytes
-	headerSize    uint8 = 20
-	magicByteSize uint8 = 8
-	versionSize   uint8 = 1
-	flagSize      uint8 = 2
-	reqIDSize     uint8 = 4
-	typeSize      uint8 = 1
-	lengthSize    uint8 = 4
-	// total = 20
+	headerSize     uint8 = 16
+	magicByteSize  uint8 = 4
+	versionSize    uint8 = 1
+	frameFlagsSize uint8 = 1
+	reqIDSize      uint8 = 4
+	msgFlagsSize   uint8 = 1
+	typeSize       uint8 = 1
+	lengthSize     uint8 = 4
+	// total = 16
 
 	// header offsets
-	offMagic   uint8 = 0
-	offVersion uint8 = 8
-	offFlags   uint8 = 9
-	offReqID   uint8 = 11
-	offType    uint8 = 15
-	offLength  uint8 = 16
+	offMagic      uint8 = 0
+	offVersion    uint8 = 4
+	offFrameFlags uint8 = 5
+	offReqID      uint8 = 6
+	offMsgFlags   uint8 = 10
+	offType       uint8 = 11
+	offLength     uint8 = 12
 
-	flagZero   uint16 = 0
-	flagStream uint16 = 1
+	flagZero   uint8 = 0
+	flagStream uint8 = 1
 
 	noReplyReqID uint32 = 0
-	
+
 	protocolVersion uint8  = 1
 	maxPayloadSize  uint32 = 1024 * 1024
 )
@@ -54,11 +57,61 @@ const (
 	CorruptedPayload   ProtocolErrCode = 243
 )
 
+type Metadata struct {
+	Type  uint8
+	Flags uint8
+	Size  uint32
+}
+
 type Message struct {
-	reqID   uint32
-	Flags   uint16
-	Type    uint8
+	reqID      uint32
+	frameFlags uint8
+	Metadata
 	Payload []byte
+}
+
+type Stream struct {
+	Metadata
+	Pipe io.Reader
+	io.Closer
+}
+
+type streamWriter struct {
+	w         io.WriteCloser
+	remaining int
+	header    []byte
+}
+
+func (sw *streamWriter) Write(p []byte) (int, error) {
+
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	if sw.remaining < len(p) {
+		return 0, errors.New("stream overrun")
+	}
+
+	if sw.header != nil {
+		_, err := sw.w.Write(sw.header)
+		if err != nil {
+			return 0, err
+		}
+		sw.header = nil
+	}
+
+	n, err := sw.w.Write(p)
+	sw.remaining -= n
+
+	return n, err
+}
+
+func (sw *streamWriter) Close() error {
+	if sw.remaining != 0 {
+		sw.w.Close()
+		return errors.New("stream underrun")
+	}
+	return sw.w.Close()
 }
 
 type ProtocolErr interface {
@@ -103,10 +156,11 @@ func makeHeader(msg *Message) []byte {
 	copy(buf[offMagic:offMagic+magicByteSize], magicByte[:])
 
 	buf[offVersion] = protocolVersion
-	binary.BigEndian.PutUint16(buf[offFlags:offFlags+flagSize], msg.Flags)
+	buf[offFrameFlags] = msg.frameFlags
 	binary.BigEndian.PutUint32(buf[offReqID:offReqID+reqIDSize], msg.reqID)
+	buf[offMsgFlags] = msg.Flags
 	buf[offType] = msg.Type
-	binary.BigEndian.PutUint32(buf[offLength:offLength+lengthSize], uint32(len(msg.Payload)))
+	binary.BigEndian.PutUint32(buf[offLength:offLength+lengthSize], msg.Size)
 
 	return buf
 }
@@ -115,6 +169,10 @@ func writeFrame(conn io.ReadWriter, msg *Message) error {
 
 	if uint32(len(msg.Payload)) > maxPayloadSize {
 		return &ErrPayloadTooLarge{}
+	}
+
+	if msg.Size != uint32(len(msg.Payload)) {
+		return errors.New("size does not match payload length")
 	}
 
 	if _, err := conn.Write(makeHeader(msg)); err != nil {
@@ -132,7 +190,7 @@ func validateProtocol(conn io.ReadCloser, msg *Message) error {
 
 	buf := make([]byte, offReqID+reqIDSize)
 	_, err := io.ReadFull(conn, buf)
-	
+
 	if err != nil {
 		return err
 	}
@@ -145,22 +203,40 @@ func validateProtocol(conn io.ReadCloser, msg *Message) error {
 		return &ErrUnsupportedVersion{}
 	}
 
-	flags := binary.BigEndian.Uint16(buf[offFlags : offFlags+flagSize])
-	reqID := binary.BigEndian.Uint32(buf[offReqID : offReqID+reqIDSize])
-
-	msg.Flags = flags
-	msg.reqID = reqID
+	msg.frameFlags = buf[offFrameFlags]
+	msg.reqID = binary.BigEndian.Uint32(buf[offReqID : offReqID+reqIDSize])
 
 	return nil
 }
 
-func readPayload(conn io.ReadCloser, msg *Message) error {
+func getStream(conn io.ReadCloser) (*Stream, error) {
 
-	off := offType
+	off := offMsgFlags
 
 	buf := make([]byte, headerSize-off)
 	_, err := io.ReadFull(conn, buf)
-	
+
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Stream{}
+	s.Size = binary.BigEndian.Uint32(buf[offLength-off : offLength-off+lengthSize])
+	s.Flags = buf[offMsgFlags-off]
+	s.Type = buf[offType-off]
+	s.Pipe = io.LimitReader(conn, int64(s.Size))
+	s.Closer = conn
+
+	return s, nil
+}
+
+func readPayload(conn io.ReadCloser, msg *Message) error {
+
+	off := offMsgFlags
+
+	buf := make([]byte, headerSize-off)
+	_, err := io.ReadFull(conn, buf)
+
 	if err != nil {
 		return err
 	}
@@ -172,14 +248,16 @@ func readPayload(conn io.ReadCloser, msg *Message) error {
 	}
 
 	payload := make([]byte, payloadSize)
-	_, err = io.ReadFull(conn, payload); 
-	
+	_, err = io.ReadFull(conn, payload)
+
 	if err != nil {
 		return err
 	}
 
+	msg.Flags = buf[offMsgFlags-off]
 	msg.Type = buf[offType-off]
 	msg.Payload = payload
+	msg.Size = payloadSize
 
 	return nil
 }

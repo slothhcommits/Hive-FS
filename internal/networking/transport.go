@@ -7,13 +7,16 @@ import (
 	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Transport interface {
 	ListenAndAccept(addr string) error
 	Consume() <-chan Request
+	Streams() <-chan *Stream
 	Dial(addr string) (Peer, error)
+	OpenStream(string, time.Duration, Metadata) (io.WriteCloser, error)
 	Close() error
 }
 
@@ -29,9 +32,9 @@ type Peer interface {
 }
 
 type connection struct {
-	outbound bool
 	mu       sync.Mutex
 	conn     net.Conn
+	isStream atomic.Bool
 }
 
 func (c *connection) write(msg *Message) error {
@@ -74,7 +77,7 @@ type OutboundPeer struct {
 
 func newOutboundPeer(conn net.Conn) *OutboundPeer {
 	return &OutboundPeer{
-		connection: &connection{outbound: true, mu: sync.Mutex{}, conn: conn},
+		connection: &connection{mu: sync.Mutex{}, conn: conn},
 		pendingMu:  sync.Mutex{},
 		pending:    make(map[uint32]chan *Message),
 		wg:         sync.WaitGroup{},
@@ -152,7 +155,10 @@ func (op *OutboundPeer) Close() error {
 
 	err := ErrConnClosed{}
 	msg := &Message{
-		Type:    err.code(),
+		Metadata: Metadata{
+			Type: err.code(),
+			Size: uint32(len(err.payload())),
+		},
 		Payload: err.payload(),
 	}
 
@@ -166,17 +172,30 @@ func (op *OutboundPeer) Close() error {
 	return op.conn.Close()
 }
 
-type TCPTransport struct {
-	closeDone sync.Once
-	done      chan struct{}
+const (
+	dialTimeout  = 2 * time.Second
+	readDeadline = 60 * time.Second
+)
 
+type TCPTransport struct {
 	obMu          sync.Mutex
 	outboundPeers map[string]*OutboundPeer
 
-	Messages chan Request
-	streams  chan io.ReadCloser
+	Messages  chan Request
+	StreamsCh chan *Stream
 
-	wg sync.WaitGroup
+	wg        sync.WaitGroup
+	closeDone sync.Once
+	shutdown  chan struct{}
+}
+
+func NewTCPTransport() *TCPTransport {
+	return &TCPTransport{
+		outboundPeers: make(map[string]*OutboundPeer),
+		Messages:      make(chan Request),
+		StreamsCh:     make(chan *Stream),
+		shutdown:      make(chan struct{}),
+	}
 }
 
 func (t *TCPTransport) ListenAndAccept(addr string) error {
@@ -187,18 +206,18 @@ func (t *TCPTransport) ListenAndAccept(addr string) error {
 	}
 
 	go func() {
-		<-t.done
+		<-t.shutdown
 		ln.Close()
 	}()
 
 	for {
 
 		select {
-			case <-t.done:
-				return nil
-			default:
+		case <-t.shutdown:
+			return nil
+		default:
 		}
-		
+
 		conn, err := ln.Accept()
 		if err != nil {
 			return err
@@ -209,13 +228,30 @@ func (t *TCPTransport) ListenAndAccept(addr string) error {
 	}
 }
 
-// TODO: Timeouts
 func (t *TCPTransport) readInbound(conn net.Conn) {
 
 	defer t.wg.Done()
-	defer conn.Close()
 
 	connection := &connection{conn: conn, mu: sync.Mutex{}}
+	defer func() {
+		if !connection.isStream.Load() {
+			connection.conn.Close()
+		}
+	}()
+
+	returnCtxWatcher := make(chan struct{}, 1)
+	defer func() { returnCtxWatcher <- struct{}{} }()
+
+	go func() {
+		select {
+		case <-returnCtxWatcher:
+		case <-t.shutdown:
+			if !connection.isStream.Load() {
+				connection.conn.Close()
+			}
+		}
+	}()
+
 	pushMsg := func(msg *Message) {
 		inb := &Inbound{
 			connection: connection,
@@ -223,62 +259,45 @@ func (t *TCPTransport) readInbound(conn net.Conn) {
 		}
 		select {
 		case t.Messages <- inb:
-		case <-t.done:
+		case <-t.shutdown:
 		}
 	}
 
-	t.read(connection, pushMsg)
-}
-
-func (t *TCPTransport) read(c *connection, pushMsg func(*Message)) {
-
-	doneCh := make(chan struct{}, 1)
-	defer func() { doneCh <- struct{}{} }()
-
-	go func() {
-		select {
-		case <-doneCh:
-		case <-t.done:
-			c.conn.Close()
-		}
-	}()
-
-	conn := c.conn
 	for {
 
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(readDeadline))
 
 		msg := &Message{}
 
 		err := validateProtocol(conn, msg)
 		if err != nil {
-
 			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
 			return
 		}
 
 		switch {
 
-		case (msg.Flags & flagStream) == flagStream:
+		case (msg.frameFlags & flagStream) == flagStream:
 
-			//TODO:fix loop and pass metadata
-			t.streams <- conn
+			s, err := getStream(conn)
+			if err != nil {
+				log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+				return
+			}
+
+			select {
+			case t.StreamsCh <- s:
+				connection.isStream.Store(true)
+				conn.SetReadDeadline(time.Time{})
+			case <-t.shutdown:
+			}
+			return
 
 		default:
 
 			err := readPayload(conn, msg)
 			if err != nil {
-
-				var protocErr ProtocolErr
-				if errors.As(err, &protocErr) {
-					c.write(&Message{
-						Flags:   0,
-						reqID:   msg.reqID,
-						Type:    uint8(protocErr.code()),
-						Payload: protocErr.payload(),
-					})
-				}
-
+				t.writeError(connection, msg, err)
 				log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
 				return
 			}
@@ -288,7 +307,7 @@ func (t *TCPTransport) read(c *connection, pushMsg func(*Message)) {
 	}
 }
 
-// dial gives an outbound peer.
+// dial returns an outbound peer.
 func (t *TCPTransport) Dial(addr string) (Peer, error) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
@@ -304,7 +323,7 @@ func (t *TCPTransport) Dial(addr string) (Peer, error) {
 		return peer, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", key, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", key, dialTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -316,14 +335,50 @@ func (t *TCPTransport) Dial(addr string) (Peer, error) {
 	return peer, nil
 }
 
+// on what conditions should the peer close?
+// 1. caller calls peer.Close(), 2. transport shutdown, 3. ReadDeadline exceeded, protocol error, EOF, conn reset.
+
 func (t *TCPTransport) readOutbound(peer *OutboundPeer) {
 
 	defer t.wg.Done()
+	defer peer.Close()
+	defer t.dropOutbound(peer.RemoteAddr())
 
-	t.read(peer.connection, peer.pushMsg)
+	returnCtxWatcher := make(chan struct{}, 1)
+	defer func() { returnCtxWatcher <- struct{}{} }()
 
-	t.dropOutbound(peer.RemoteAddr())
-	peer.Close()
+	go func() {
+		select {
+		case <-returnCtxWatcher:
+		case <-t.shutdown:
+			peer.Close()
+		}
+	}()
+
+	conn := peer.conn
+
+	for {
+
+		conn.SetReadDeadline(time.Now().Add(readDeadline))
+
+		msg := &Message{}
+
+		err := validateProtocol(conn, msg)
+		if err != nil {
+			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			return
+		}
+
+		err = readPayload(conn, msg)
+		if err != nil {
+			t.writeError(peer.connection, msg, err)
+			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			return
+		}
+
+		peer.pushMsg(msg)
+	}
+
 }
 
 func (t *TCPTransport) dropOutbound(addr string) {
@@ -336,19 +391,68 @@ func (t *TCPTransport) Consume() <-chan Request {
 	return t.Messages
 }
 
-func (t *TCPTransport) Close() {
+func (t *TCPTransport) OpenStream(addr string, dialTimeout time.Duration, md Metadata) (io.WriteCloser, error) {
 
-	t.closeDone.Do(func() { close(t.done) })
+	header := makeHeader(&Message{
+		frameFlags: flagStream,
+		Metadata:   md,
+	})
+
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return &streamWriter{
+		w:         conn,
+		remaining: int(md.Size),
+		header:    header,
+	}, nil
+}
+
+func (t *TCPTransport) Streams() <-chan *Stream {
+	return t.StreamsCh
+}
+
+func (t *TCPTransport) Close() error {
+
+	t.closeDone.Do(func() { close(t.shutdown) })
+
+	var err error
 
 	t.obMu.Lock()
 	for key, obp := range t.outboundPeers {
-		obp.Close()
+		if cerr := obp.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
 		delete(t.outboundPeers, key)
 	}
 	t.obMu.Unlock()
 
 	t.wg.Wait()
 	close(t.Messages)
+	close(t.StreamsCh)
+
+	return err
+}
+
+func (t *TCPTransport) writeError(c *connection, msg *Message, err error) {
+
+	if err != nil {
+
+		var protocErr ProtocolErr
+		if errors.As(err, &protocErr) {
+			c.write(&Message{
+				Metadata: Metadata{
+					Type:  uint8(protocErr.code()),
+					Size: uint32(len(protocErr.payload())),
+				},
+				reqID:   msg.reqID,
+				Payload: protocErr.payload(),
+			})
+		}
+	}
+
 }
 
 type TransportErrCode uint
