@@ -1,4 +1,4 @@
-package networking
+package hive
 
 import (
 	"errors"
@@ -27,6 +27,7 @@ type Request interface {
 type Peer interface {
 	Send(*Message) error
 	Request(*Message) (<-chan *Message, error)
+	Unregister(msg *Message)
 	RemoteAddr() string
 	Close() error
 }
@@ -40,7 +41,7 @@ type connection struct {
 func (c *connection) write(msg *Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	c.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
 	return writeFrame(c.conn, msg)
 }
 
@@ -72,7 +73,6 @@ type OutboundPeer struct {
 	*connection
 	pendingMu sync.Mutex
 	pending   map[uint32]chan *Message
-	wg        sync.WaitGroup
 }
 
 func newOutboundPeer(conn net.Conn) *OutboundPeer {
@@ -80,7 +80,6 @@ func newOutboundPeer(conn net.Conn) *OutboundPeer {
 		connection: &connection{mu: sync.Mutex{}, conn: conn},
 		pendingMu:  sync.Mutex{},
 		pending:    make(map[uint32]chan *Message),
-		wg:         sync.WaitGroup{},
 	}
 }
 
@@ -104,27 +103,23 @@ func (op *OutboundPeer) register() (uint32, chan *Message) {
 	return reqID, replyCh
 }
 
-func (op *OutboundPeer) unregister(id uint32) {
+func (op *OutboundPeer) Unregister(msg *Message) {
 	op.pendingMu.Lock()
-	delete(op.pending, id)
+	delete(op.pending, msg.reqID)
 	op.pendingMu.Unlock()
 }
 
 func (op *OutboundPeer) Send(msg *Message) error {
-	op.wg.Add(1)
-	defer op.wg.Done()
 	msg.reqID = noReplyReqID
 	return op.connection.write(msg)
 }
 
 func (op *OutboundPeer) Request(msg *Message) (<-chan *Message, error) {
-	op.wg.Add(1)
-	defer op.wg.Done()
 	id, ch := op.register()
 	msg.reqID = id
 
 	if err := op.write(msg); err != nil {
-		op.unregister(id)
+		op.Unregister(msg)
 		return nil, err
 	}
 	return ch, nil
@@ -139,8 +134,11 @@ func (op *OutboundPeer) pushMsg(msg *Message) {
 		return
 	}
 
-	ch <- msg
-	op.unregister(msg.reqID)
+	select {
+	case ch <- msg:
+	default:
+	}
+	op.Unregister(msg)
 }
 
 func (op *OutboundPeer) RemoteAddr() string {
@@ -149,7 +147,6 @@ func (op *OutboundPeer) RemoteAddr() string {
 
 func (op *OutboundPeer) Close() error {
 
-	op.wg.Wait()
 	op.pendingMu.Lock()
 	defer op.pendingMu.Unlock()
 
@@ -173,8 +170,9 @@ func (op *OutboundPeer) Close() error {
 }
 
 const (
-	dialTimeout  = 2 * time.Second
-	readDeadline = 60 * time.Second
+	dialTimeout   = 2 * time.Second
+	readDeadline  = 60 * time.Second
+	writeDeadline = 10 * time.Second
 )
 
 type TCPTransport struct {
@@ -192,8 +190,8 @@ type TCPTransport struct {
 func NewTCPTransport() *TCPTransport {
 	return &TCPTransport{
 		outboundPeers: make(map[string]*OutboundPeer),
-		Messages:      make(chan Request),
-		StreamsCh:     make(chan *Stream),
+		Messages:      make(chan Request, 128),
+		StreamsCh:     make(chan *Stream, 16),
 		shutdown:      make(chan struct{}),
 	}
 }
@@ -393,6 +391,10 @@ func (t *TCPTransport) Consume() <-chan Request {
 
 func (t *TCPTransport) OpenStream(addr string, dialTimeout time.Duration, md Metadata) (io.WriteCloser, error) {
 
+	if md.Size == 0 {
+		return nil, errors.New("zero-length stream")
+	}
+
 	header := makeHeader(&Message{
 		frameFlags: flagStream,
 		Metadata:   md,
@@ -444,7 +446,7 @@ func (t *TCPTransport) writeError(c *connection, msg *Message, err error) {
 		if errors.As(err, &protocErr) {
 			c.write(&Message{
 				Metadata: Metadata{
-					Type:  uint8(protocErr.code()),
+					Type: uint8(protocErr.code()),
 					Size: uint32(len(protocErr.payload())),
 				},
 				reqID:   msg.reqID,

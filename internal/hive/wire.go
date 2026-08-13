@@ -1,4 +1,4 @@
-package networking
+package hive
 
 import (
 	"bytes"
