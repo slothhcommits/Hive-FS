@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package gfs.v1;
+
+option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+
+message Error {
+  enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_ERROR = 199;
+  }
+
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+
+    // shared 151 - 200
+    CODE_UNMARSHAL_FAILED = 151;
+
+    // client 1 - 50
+    CODE_LOOKUP_FAILED = 1;
+    CODE_LENGTH_EXCEEDED = 2;
+    CODE_CHUNKSERVERS_UNAVAILABLE = 3;
+    CODE_LEASE_GRANT_FAILED = 4;
+  }
+
+  Code code = 1;
+  string message = 2;
+}

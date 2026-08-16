@@ -22,6 +22,7 @@ type Transport interface {
 
 type Request interface {
 	Respond(*Message) error
+	Message() *Message
 }
 
 type Peer interface {
@@ -53,6 +54,10 @@ type Inbound struct {
 func (i *Inbound) Respond(msg *Message) error {
 	msg.reqID = i.msg.reqID
 	return i.write(msg)
+}
+
+func (i *Inbound) Message() *Message {
+	return i.msg
 }
 
 func randUINT32() uint32 {

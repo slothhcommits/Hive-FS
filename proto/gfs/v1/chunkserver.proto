@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package gfs.v1;
+
+option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+
+// chunkserver message range is 51 - 100
+message Chunkserver {
+  enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+
+    // master message types
+    MESSAGE_TYPE_HEARTBEAT = 51;
+    MESSAGE_TYPE_UPDATE_VERSION_ACK = 52;
+    MESSAGE_TYPE_LEASE_GRANT_ACK = 53;
+
+    // client message types
+    
+  }
+}
+
+// master messages
+message ChunkInfo {
+  uint64 id = 1;
+  uint32 version = 2;
+  bool extend_lease = 3;
+}
+
+message Heartbeat {
+  string addr = 1;
+  uint32 disk_util = 2;
+  repeated ChunkInfo chunks = 3;
+}
+
+message UpdateVersionAck {
+  bool success = 1;
+}
+
+message GrantLeaseAck {
+	bool success = 1;
+}
+
+// client messages

@@ -6,18 +6,14 @@ import (
 	"sync"
 )
 
-type metadata struct{}
+type metadata struct {
+	chunkHandles []uint64
+}
 
 type node struct {
 	dir bool
+	sync.RWMutex
 	metadata
-}
-
-type lockReq struct {
-	path string
-	read bool
-	noOp bool
-	op   func(string) error
 }
 
 type lock struct {
@@ -30,14 +26,37 @@ type lockManager struct {
 	locks map[string]*lock
 }
 
+func newLockManager() *lockManager {
+	return &lockManager{
+		Mutex: sync.Mutex{},
+		locks: make(map[string]*lock),
+	}
+}
+
+type lockReq struct {
+	path string
+	read bool
+	noOp bool
+	op   func(string) error
+}
+
 const (
 	maxPathlen = 256
 )
 
 type namespace struct {
+	lm *lockManager
+
 	mu      sync.RWMutex
 	entries map[string]*node
-	lm      *lockManager
+}
+
+func newNamesapce() *namespace {
+	return &namespace{
+		lm:      newLockManager(),
+		mu:      sync.RWMutex{},
+		entries: make(map[string]*node),
+	}
 }
 
 func (ns *namespace) allowedChar(c rune) bool {
@@ -207,7 +226,7 @@ func (ns *namespace) create(path string, f *node) error {
 		ns.entries[path] = f
 		ns.mu.Unlock()
 	} else {
-		return &ErrNodeExist{}
+		return &ErrObjectExist{}
 	}
 
 	return nil
@@ -226,27 +245,28 @@ func (ns *namespace) checkExist(path string) error {
 	return nil
 }
 
-func (ns *namespace) lookup(path string) (*node, error) {
+func (ns *namespace) lookup(path string) (*node, func(), error) {
 
 	if !ns.validatePath(path) {
-		return nil, &ErrInvalidPath{}
+		return nil, nil, &ErrInvalidPath{}
 	}
 
 	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: true, noOp: true, op: ns.checkExist}})
 	if err != nil {
-		return nil, err
+		unlock()
+		return nil, nil, err
 	}
-	defer unlock()
-
+	
 	var f *node
 	ns.mu.RLock()
 	f, ok := ns.entries[path]
 	ns.mu.RUnlock()
 	if !ok {
-		return nil, &ErrNotFound{}
+		unlock()
+		return nil, nil, &ErrNotFound{}
 	}
 
-	return f, nil
+	return f, unlock, nil
 }
 
 func (ns *namespace) isAncestor(p1, p2 string) bool {
@@ -387,7 +407,7 @@ func (ns *namespace) snapshot(src, dst string) error {
 	_, ok = ns.entries[dst]
 	if ok {
 		ns.mu.RUnlock()
-		return &ErrNodeExist{}
+		return &ErrObjectExist{}
 	}
 
 	ns.mu.RUnlock()
@@ -448,6 +468,7 @@ func (ns *namespace) list(path string) ([]*node, error) {
 	return nodes, nil
 }
 
+// TODO: tombstone and gc
 func (ns *namespace) delete(path string) error {
 
 	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: false, noOp: true, op: ns.checkExist}})
@@ -472,10 +493,10 @@ func (e *ErrInvalidPath) Error() string {
 	return "invalid path"
 }
 
-type ErrNodeExist struct{}
+type ErrObjectExist struct{}
 
-func (e *ErrNodeExist) Error() string {
-	return "node exist"
+func (e *ErrObjectExist) Error() string {
+	return "object exist"
 }
 
 type ErrNotFound struct{}

@@ -25,7 +25,7 @@ func NewChunkReader(size uint32, r io.ReadSeekCloser) (*ChunkReader, error) {
 }
 
 func (cr *ChunkReader) Read(p []byte) (int, error) {
-	return cr.Read(p)
+	return cr.Reader.Read(p)
 }
 
 func (cr *ChunkReader) Close() error {

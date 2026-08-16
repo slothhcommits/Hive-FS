@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package gfs.v1;
+
+option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+
+// client message type range is 1 - 50
+message Client {
+	enum MessageType {
+		
+		MESSAGE_TYPE_UNSPECIFIED = 0;
+
+		// master message types
+		MESSAGE_TYPE_GET_CHUNK_REPLICAS = 1;
+		MESSAGE_TYPE_CREATE = 2;
+
+		// chunkserver message types
+		
+	};
+}
+
+// master messages
+message GetChunkReplicas {
+	string path = 1;
+	uint32 chunk_idx = 2;
+}
+
+message Create {
+	string path = 1;
+}

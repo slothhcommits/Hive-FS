@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package gfs.v1;
+
+option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+
+// master message type range is 101 - 150
+message Master {
+  enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+
+    // chunkserver message types
+    MESSAGE_TYPE_HEARTBEAT_RESPONSE = 101;
+    MESSAGE_TYPE_UPDATE_VERSION = 102;
+    MESSAGE_TYPE_GRANT_LEASE = 103;
+
+    // client message types
+    MESSAGE_TYPE_SEND_CHUNK_REPLICAS = 126;
+  }
+}
+
+// chunkserver messages
+message Command {}
+
+message HeartbeatRes {
+  repeated Command cmds = 2;
+}
+
+message GrantLease {
+  uint64 id = 1;
+}
+
+message UpdateVersion {
+  uint64 id = 1;
+  uint32 version = 2;
+}
+
+// client messages
+
+message SendChunkReplicas {
+  uint64 chunk_id = 1;
+  uint32 version = 2;
+  string primary = 3;
+  int64 lease_expiry = 4;
+  repeated string locations = 5;
+}
