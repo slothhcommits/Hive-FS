@@ -26,21 +26,24 @@ type Client_MessageType int32
 const (
 	Client_MESSAGE_TYPE_UNSPECIFIED Client_MessageType = 0
 	// master message types
-	Client_MESSAGE_TYPE_GET_CHUNK_REPLICAS Client_MessageType = 1
-	Client_MESSAGE_TYPE_CREATE             Client_MessageType = 2
+	Client_MESSAGE_TYPE_CREATE_REQ             Client_MessageType = 1
+	Client_MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ Client_MessageType = 2
+	Client_MESSAGE_TYPE_SNAPSHOT_REQ           Client_MessageType = 3
 )
 
 // Enum value maps for Client_MessageType.
 var (
 	Client_MessageType_name = map[int32]string{
 		0: "MESSAGE_TYPE_UNSPECIFIED",
-		1: "MESSAGE_TYPE_GET_CHUNK_REPLICAS",
-		2: "MESSAGE_TYPE_CREATE",
+		1: "MESSAGE_TYPE_CREATE_REQ",
+		2: "MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ",
+		3: "MESSAGE_TYPE_SNAPSHOT_REQ",
 	}
 	Client_MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNSPECIFIED":        0,
-		"MESSAGE_TYPE_GET_CHUNK_REPLICAS": 1,
-		"MESSAGE_TYPE_CREATE":             2,
+		"MESSAGE_TYPE_UNSPECIFIED":            0,
+		"MESSAGE_TYPE_CREATE_REQ":             1,
+		"MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ": 2,
+		"MESSAGE_TYPE_SNAPSHOT_REQ":           3,
 	}
 )
 
@@ -109,6 +112,50 @@ func (*Client) Descriptor() ([]byte, []int) {
 }
 
 // master messages
+type Create struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Create) Reset() {
+	*x = Create{}
+	mi := &file_gfs_v1_client_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Create) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Create) ProtoMessage() {}
+
+func (x *Create) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_client_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Create.ProtoReflect.Descriptor instead.
+func (*Create) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_client_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Create) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
 type GetChunkReplicas struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -119,7 +166,7 @@ type GetChunkReplicas struct {
 
 func (x *GetChunkReplicas) Reset() {
 	*x = GetChunkReplicas{}
-	mi := &file_gfs_v1_client_proto_msgTypes[1]
+	mi := &file_gfs_v1_client_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -131,7 +178,7 @@ func (x *GetChunkReplicas) String() string {
 func (*GetChunkReplicas) ProtoMessage() {}
 
 func (x *GetChunkReplicas) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_client_proto_msgTypes[1]
+	mi := &file_gfs_v1_client_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -144,7 +191,7 @@ func (x *GetChunkReplicas) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChunkReplicas.ProtoReflect.Descriptor instead.
 func (*GetChunkReplicas) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_client_proto_rawDescGZIP(), []int{1}
+	return file_gfs_v1_client_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetChunkReplicas) GetPath() string {
@@ -161,28 +208,29 @@ func (x *GetChunkReplicas) GetChunkIdx() uint32 {
 	return 0
 }
 
-type Create struct {
+type Snapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Src           string                 `protobuf:"bytes,1,opt,name=src,proto3" json:"src,omitempty"`
+	Dst           string                 `protobuf:"bytes,2,opt,name=dst,proto3" json:"dst,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Create) Reset() {
-	*x = Create{}
-	mi := &file_gfs_v1_client_proto_msgTypes[2]
+func (x *Snapshot) Reset() {
+	*x = Snapshot{}
+	mi := &file_gfs_v1_client_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Create) String() string {
+func (x *Snapshot) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Create) ProtoMessage() {}
+func (*Snapshot) ProtoMessage() {}
 
-func (x *Create) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_client_proto_msgTypes[2]
+func (x *Snapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_client_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -193,14 +241,21 @@ func (x *Create) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Create.ProtoReflect.Descriptor instead.
-func (*Create) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_client_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
+func (*Snapshot) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_client_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *Create) GetPath() string {
+func (x *Snapshot) GetSrc() string {
 	if x != nil {
-		return x.Path
+		return x.Src
+	}
+	return ""
+}
+
+func (x *Snapshot) GetDst() string {
+	if x != nil {
+		return x.Dst
 	}
 	return ""
 }
@@ -209,17 +264,21 @@ var File_gfs_v1_client_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_client_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/client.proto\x12\x06gfs.v1\"s\n" +
-	"\x06Client\"i\n" +
+	"\x13gfs/v1/client.proto\x12\x06gfs.v1\"\x9b\x01\n" +
+	"\x06Client\"\x90\x01\n" +
 	"\vMessageType\x12\x1c\n" +
-	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12#\n" +
-	"\x1fMESSAGE_TYPE_GET_CHUNK_REPLICAS\x10\x01\x12\x17\n" +
-	"\x13MESSAGE_TYPE_CREATE\x10\x02\"C\n" +
+	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17MESSAGE_TYPE_CREATE_REQ\x10\x01\x12'\n" +
+	"#MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ\x10\x02\x12\x1d\n" +
+	"\x19MESSAGE_TYPE_SNAPSHOT_REQ\x10\x03\"\x1c\n" +
+	"\x06Create\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\"C\n" +
 	"\x10GetChunkReplicas\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1b\n" +
-	"\tchunk_idx\x18\x02 \x01(\rR\bchunkIdx\"\x1c\n" +
-	"\x06Create\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04pathB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\tchunk_idx\x18\x02 \x01(\rR\bchunkIdx\".\n" +
+	"\bSnapshot\x12\x10\n" +
+	"\x03src\x18\x01 \x01(\tR\x03src\x12\x10\n" +
+	"\x03dst\x18\x02 \x01(\tR\x03dstB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_client_proto_rawDescOnce sync.Once
@@ -234,12 +293,13 @@ func file_gfs_v1_client_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_client_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_client_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_gfs_v1_client_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_gfs_v1_client_proto_goTypes = []any{
 	(Client_MessageType)(0),  // 0: gfs.v1.Client.MessageType
 	(*Client)(nil),           // 1: gfs.v1.Client
-	(*GetChunkReplicas)(nil), // 2: gfs.v1.GetChunkReplicas
-	(*Create)(nil),           // 3: gfs.v1.Create
+	(*Create)(nil),           // 2: gfs.v1.Create
+	(*GetChunkReplicas)(nil), // 3: gfs.v1.GetChunkReplicas
+	(*Snapshot)(nil),         // 4: gfs.v1.Snapshot
 }
 var file_gfs_v1_client_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -260,7 +320,7 @@ func file_gfs_v1_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_client_proto_rawDesc), len(file_gfs_v1_client_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

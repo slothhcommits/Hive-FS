@@ -1,6 +1,7 @@
 package master
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -256,7 +257,7 @@ func (ns *namespace) lookup(path string) (*node, func(), error) {
 		unlock()
 		return nil, nil, err
 	}
-	
+
 	var f *node
 	ns.mu.RLock()
 	f, ok := ns.entries[path]
@@ -384,11 +385,18 @@ func (ns *namespace) move(src, dst string) error {
 
 func (ns *namespace) snapshot(src, dst string) error {
 
-	if !ns.validatePath(src) || !ns.validatePath(dst) || ns.isAncestor(src, dst) {
+	if !ns.validatePath(src) ||
+		!ns.validatePath(dst) ||
+		ns.isAncestor(src, dst) {
 		return &ErrInvalidPath{}
 	}
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: src, read: false, noOp: true, op: ns.checkExist}, {path: dst, read: false, noOp: true, op: ns.checkExist}})
+	unlock, err := ns.acquireLocks(
+		[]*lockReq{
+			{path: src, read: false, noOp: true, op: ns.checkExist},
+			{path: dst, read: false, noOp: true, op: ns.checkExist},
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -434,10 +442,14 @@ func (ns *namespace) snapshot(src, dst string) error {
 			// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
 			// TODO: copy any metadata or node slices explicitly to avoid shallow copy
 			pathNode := ns.entries[path]
+			pathNode.RLock()
 			ns.entries[dst+strings.TrimPrefix(path, src)] = &node{
-				dir:      pathNode.dir,
-				metadata: pathNode.metadata,
+				dir: pathNode.dir,
+				metadata: metadata{
+					chunkHandles: slices.Clone(pathNode.chunkHandles),
+				},
 			}
+			pathNode.RUnlock()
 		}
 		ns.mu.Unlock()
 	}

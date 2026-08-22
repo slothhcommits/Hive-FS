@@ -17,21 +17,32 @@ const (
 	grantLeaseTimeout time.Duration = 15 * time.Second
 )
 
-type master struct {
-	listenAddr string
-	transport  hive.Transport
-	namespace  *namespace
-	chunkTable *chunkTable
-	csr        *chunkServerRegistry
+type MasterOpts struct {
+	isShadow    bool
+	listenAddr  string
+	shadowAddrs []string
 }
 
-func newMaster(addr string) *master {
+type master struct {
+	*MasterOpts
+
+	transport hive.Transport
+
+	*persistentState
+
+	csr *chunkServerRegistry
+}
+
+func newMaster(opts *MasterOpts) *master {
 	return &master{
-		listenAddr: addr,
+
+		MasterOpts: opts,
+		
 		transport:  hive.NewTCPTransport(),
-		namespace:  newNamesapce(),
-		chunkTable: newChunkTable(),
-		csr:        newChunkServerRegistry(),
+
+		persistentState: newPersistentState(),
+		
+		csr: newChunkServerRegistry(),
 	}
 }
 
@@ -59,16 +70,24 @@ func (m *master) handleRequests(ctx context.Context) {
 
 // uninitiated requests
 func (m *master) requestRouter(req hive.Request) {
+
 	switch req.Message().Type {
 
 	// client
-	case uint8(messages.Client_MESSAGE_TYPE_CREATE):
-	case uint8(messages.Client_MESSAGE_TYPE_GET_CHUNK_REPLICAS):
+	case uint8(messages.Client_MESSAGE_TYPE_CREATE_REQ):
+		req.Respond(m.createHandler(req.Message()))
+
+	case uint8(messages.Client_MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ):
 		req.Respond(m.writeHandler(req.Message()))
+
+	case uint8(messages.Client_MESSAGE_TYPE_SNAPSHOT_REQ):
 
 	// chunkserver
 	case uint8(messages.Chunkserver_MESSAGE_TYPE_HEARTBEAT):
+		req.Respond(m.snapshotHandler(req.Message()))
+
 	}
+
 }
 
 func (m *master) sendRequest(addr string, msg *hive.Message, timeout time.Duration) (*hive.Message, error) {
@@ -95,7 +114,12 @@ func (m *master) sendRequest(addr string, msg *hive.Message, timeout time.Durati
 	return res, nil
 }
 
-func (m *master) createNewFile(req *messages.Create) error {
+func (m *master) createHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Create{}
+	if err := proto.Unmarshal(msg.Payload, req); err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
 
 	f := &node{
 		dir:      false,
@@ -103,10 +127,25 @@ func (m *master) createNewFile(req *messages.Create) error {
 	}
 
 	if err := m.namespace.create(req.Path, f); err != nil {
-		return err
+		return makeErrMessage(uint8(messages.Error_CODE_CREATE_FILE_FAILED), err)
 	}
 
-	return nil
+	payload, err := proto.Marshal(&messages.CreateFileAck{
+		Success: true,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	res := &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Type: uint8(messages.Master_MESSAGE_TYPE_CREATE_FILE_ACK),
+			Size: uint32(len(payload)),
+		},
+	}
+
+	return res
 }
 
 func (m *master) addNewChunk(file *node) error {
@@ -229,6 +268,17 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 	return res
 }
 
+func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Snapshot{}
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
+
+	return nil
+}
+
 func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]string, error) {
 
 	payload, err := proto.Marshal(&messages.UpdateVersion{
@@ -256,7 +306,7 @@ func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]st
 
 		msg := &hive.Message{
 			Metadata: hive.Metadata{
-				Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION),
+				Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION_REQ),
 				Size: uint32(len(payload)),
 			},
 			Payload: payload,
@@ -313,7 +363,7 @@ func (m *master) grantLease(c *chunk) error {
 	msg := &hive.Message{
 		Payload: payload,
 		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_GRANT_LEASE),
+			Type: uint8(messages.Master_MESSAGE_TYPE_GRANT_LEASE_REQ),
 			Size: uint32(len(payload)),
 		},
 	}

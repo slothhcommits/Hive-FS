@@ -10,16 +10,18 @@ message Master {
     MESSAGE_TYPE_UNSPECIFIED = 0;
 
     // chunkserver message types
-    MESSAGE_TYPE_HEARTBEAT_RESPONSE = 101;
-    MESSAGE_TYPE_UPDATE_VERSION = 102;
-    MESSAGE_TYPE_GRANT_LEASE = 103;
+    MESSAGE_TYPE_HEARTBEAT_RES = 101;
+    MESSAGE_TYPE_UPDATE_VERSION_REQ = 102;
+    MESSAGE_TYPE_GRANT_LEASE_REQ = 103;
 
     // client message types
-    MESSAGE_TYPE_SEND_CHUNK_REPLICAS = 126;
+    MESSAGE_TYPE_CREATE_FILE_ACK = 126;
+    MESSAGE_TYPE_SEND_CHUNK_REPLICAS = 127;
   }
 }
 
 // chunkserver messages
+
 message Command {}
 
 message HeartbeatRes {
@@ -36,6 +38,9 @@ message UpdateVersion {
 }
 
 // client messages
+message CreateFileAck {
+  bool success = 1;
+}
 
 message SendChunkReplicas {
   uint64 chunk_id = 1;
@@ -43,4 +48,34 @@ message SendChunkReplicas {
   string primary = 3;
   int64 lease_expiry = 4;
   repeated string locations = 5;
+}
+
+// op log
+
+message Log {
+	repeated OperationRec recs = 1;
+}
+
+message OperationRec {
+  uint32 op_type = 1;
+  repeated string args = 2;
+}
+
+message NamespaceRec {
+  string path = 1;
+  bool dir = 2;
+  Metadata metadata = 3;
+  message Metadata {
+    repeated uint64 chunk_handles = 1;
+  }
+}
+
+message ChunktableRec {
+  uint64 handle = 1;
+  Chunk chunk = 2;
+  message Chunk {
+    uint32 ref = 1;
+    uint32 version = 2;
+    uint32 rep_factor = 3;
+  }
 }
