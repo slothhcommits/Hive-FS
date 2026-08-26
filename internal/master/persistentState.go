@@ -20,10 +20,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var stateHandle atomic.Uint64
+var hivePath string
 
-func getStateHandle() uint64 {
-	return stateHandle.Add(1)
+var logHandle atomic.Uint64
+
+func newLogHandle() uint64 {
+	return logHandle.Add(1)
 }
 
 type operationType uint8
@@ -61,143 +63,64 @@ const (
 	maxLogSize      int64  = 1024 * 1024 * 10
 )
 
-type persistentState struct {
-	hivePath string
+type syncState struct {
+	sync.RWMutex
+	checkpointSig chan uint64
+}
 
-	stateMu sync.RWMutex
-	*namespace
-	*chunkTable
+func (s *syncState) isMutating() {
+	s.RLock()
+}
 
+func (s *syncState) doneMutating() {
+	s.RUnlock()
+}
+
+func (s *syncState) isReplicating() {
+	s.Lock()
+}
+
+func (s *syncState) doneReplicating() {
+	s.Unlock()
+}
+
+var stateStatus *syncState
+
+type opLog struct {
 	crc32Table *crc32.Table
 
-	logMu    sync.Mutex
-	statelog *os.File
+	logMu   sync.Mutex
+	logFile *os.File
 }
 
-func newPersistentState() *persistentState {
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-
-	hivePath := filepath.Join(home, ".hiveFS")
-	err = os.MkdirAll(hivePath, 0755)
-	if err != nil {
-		panic(err)
-	}
-
-	return &persistentState{
-
-		hivePath: hivePath,
-
-		stateMu:    sync.RWMutex{},
-		namespace:  newNamesapce(),
-		chunkTable: newChunkTable(),
-
-		crc32Table: crc32.MakeTable(crc32.Castagnoli),
-
-		logMu: sync.Mutex{},
-	}
-
+func (l *opLog) checkSum(data []byte) uint32 {
+	return crc32.Checksum(data, l.crc32Table)
 }
 
-func (s *persistentState) buildState() {
+/*
 
-	files, err := os.ReadDir(s.hivePath)
-	if err != nil {
-		panic(err)
-	}
+Operation flow : 
 
-	var logs []uint64
-	var checkpoint uint64 = 0
+0. expand the path
+1. acquire locks
+2. check exist
+exist ? file or dir?
+does not exist ? make or err
+3. collect ops.
+4. log ops
+5. apply ops
 
-	for _, file := range files {
+*/
 
-		if name, ok := strings.CutSuffix(file.Name(), ".log"); ok {
-			if n, err := strconv.ParseUint(name, 10, 64); err == nil {
-				logs = append(logs, n)
-			}
-		}
+/*
+ 
+Here : defer doneMutating in caller, 
+call-once meaning two consecutive calls to log() should have one doneMutating() call. 
+Ops should be batched and logged
 
-		if name, ok := strings.CutSuffix(file.Name(), ".cp"); ok {
-			if n, err := strconv.ParseUint(name, 10, 64); err == nil {
-				if checkpoint == 0 || checkpoint < n {
-					checkpoint = n
-				}
-			}
-		}
-	}
+*/
 
-	slices.Sort(logs)
-
-	if len(logs) != 0 {
-		stateHandle.Store(max(logs[len(logs)-1], checkpoint))
-	} else {
-		stateHandle.Store(checkpoint)
-	}
-
-	if checkpoint != 0 {
-
-		filename := strconv.FormatUint(checkpoint, 10) + ".cp"
-		cpFile, err := os.Open(filepath.Join(s.hivePath, filename))
-		if err != nil {
-			panic(err)
-		}
-
-		s.loadCheckpoint(cpFile)
-
-		trimIdx := len(logs)
-		for i := range logs {
-			if logs[i] >= checkpoint {
-				trimIdx = i
-				break
-			}
-		}
-		logs = logs[trimIdx:]
-	}
-
-	for i, log := range logs {
-
-		filename := strconv.FormatUint(log, 10) + ".log"
-		file, err := os.Open(filepath.Join(s.hivePath, filename))
-		if err != nil {
-			panic(err)
-		}
-
-		off := s.replayLog(file)
-		file.Close()
-
-		if i == len(logs)-1 {
-			if err := os.Truncate(filepath.Join(s.hivePath, filename), off); err != nil {
-				panic(err)
-			}
-		}
-	}
-
-	newLogName := strconv.FormatUint(getStateHandle(), 10) + ".log"
-	currLog, err := os.Create(filepath.Join(s.hivePath, newLogName))
-	if err != nil {
-		panic(err)
-	}
-
-	s.logMu = sync.Mutex{}
-	s.statelog = currLog
-}
-
-func (s *persistentState) checkSum(data []byte) uint32 {
-	return crc32.Checksum(data, s.crc32Table)
-}
-
-func (s *persistentState) isMutating() {
-	s.stateMu.RLock()
-}
-
-func (s *persistentState) doneMutating() {
-	s.stateMu.RUnlock()
-}
-
-func (s *persistentState) log(operations []*operation) {
+func (l *opLog) log(operations []*operation) {
 
 	log := messages.Log{Recs: []*messages.OperationRec{}}
 	for _, op := range operations {
@@ -215,60 +138,162 @@ func (s *persistentState) log(operations []*operation) {
 		panic(err)
 	}
 
-	binary.Write(&buf, binary.BigEndian, s.checkSum(logBuf))
+	binary.Write(&buf, binary.BigEndian, l.checkSum(logBuf))
 	binary.Write(&buf, binary.BigEndian, uint32(len(logBuf)))
 	_, err = buf.Write(logBuf)
 	if err != nil {
 		panic(err)
 	}
 
-	s.logMu.Lock()
+	l.logMu.Lock()
 
-	info, err := s.statelog.Stat()
+	info, err := l.logFile.Stat()
 	if err != nil {
 		panic(err)
 	}
 
 	if info.Size() > maxLogSize {
-		s.stateMu.Lock()
-		s.rotateLog()
-		s.stateMu.Unlock()
+		l.rotateLog()
 	}
 
-	writeFile(buf.Bytes(), s.statelog)
+	writeFile(buf.Bytes(), l.logFile)
 
-	s.isMutating()
-	s.logMu.Unlock()
-
-	// defer doneMutating in caller
+	stateStatus.isMutating()
+	l.logMu.Unlock()
 }
 
-func (s *persistentState) rotateLog() {
+func (l *opLog) rotateLog() {
 
-	err := s.statelog.Close()
+	err := l.logFile.Close()
 	if err != nil {
 		panic(err)
 	}
 
-	handle := getStateHandle()
+	handle := newLogHandle()
 
 	newLogName := strconv.FormatUint(handle, 10) + ".log"
-	newLog, err := os.Create(filepath.Join(s.hivePath, newLogName))
+	newLog, err := os.Create(filepath.Join(hivePath, newLogName))
 	if err != nil {
 		panic(err)
 	}
 
-	s.flushState(handle)
+	l.logFile = newLog
 
-	s.statelog = newLog
+	select {
+	case stateStatus.checkpointSig <- handle:
+	default:
+	}
+
+}
+
+var logger *opLog
+
+type persistentState struct {
+	*namespace
+	*chunkTable
+
+	crc32Table *crc32.Table
+}
+
+func newPersistentState() *persistentState {
+
+	return &persistentState{
+
+		namespace:  newNamesapce(),
+		chunkTable: newChunkTable(),
+
+		crc32Table: crc32.MakeTable(crc32.Castagnoli),
+	}
+
+}
+
+func (s *persistentState) buildState() {
+
+	files, err := os.ReadDir(hivePath)
+	if err != nil {
+		panic(err)
+	}
+
+	var logs []uint64
+	var checkpoint uint64 = 0
+
+	for _, file := range files {
+
+		if name, ok := strings.CutSuffix(file.Name(), ".log"); ok {
+			if n, err := strconv.ParseUint(name, 10, 64); err == nil && n != logHandle.Load() {
+				logs = append(logs, n)
+			}
+		}
+
+		if name, ok := strings.CutSuffix(file.Name(), ".cp"); ok {
+			if n, err := strconv.ParseUint(name, 10, 64); err == nil {
+				if checkpoint == 0 || checkpoint < n {
+					checkpoint = n
+				}
+			}
+		}
+	}
+
+	slices.Sort(logs)
+
+	if checkpoint != 0 {
+
+		filename := strconv.FormatUint(checkpoint, 10) + ".cp"
+		cpFile, err := os.Open(filepath.Join(hivePath, filename))
+		if err != nil {
+			panic(err)
+		}
+
+		s.loadCheckpoint(cpFile)
+		err = cpFile.Close()
+		if err != nil {
+			panic(err)
+		}
+
+		trimIdx := len(logs)
+		for i := range logs {
+			if logs[i] >= checkpoint {
+				trimIdx = i
+				break
+			}
+		}
+		logs = logs[trimIdx:]
+	}
+
+	for i, log := range logs {
+
+		filename := strconv.FormatUint(log, 10) + ".log"
+		file, err := os.Open(filepath.Join(hivePath, filename))
+		if err != nil {
+			panic(err)
+		}
+
+		off := s.replayLog(file)
+		file.Close()
+
+		if i == len(logs)-1 {
+			if err := os.Truncate(filepath.Join(hivePath, filename), off); err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
+func (s *persistentState) listenCheckpointSig() {
+
+	for handle := range stateStatus.checkpointSig {
+		s.flushState(handle)
+	}
 }
 
 func (s *persistentState) flushState(handle uint64) {
 
-	file, err := os.Create(filepath.Join(s.hivePath, "temp.cp"))
+	file, err := os.Create(filepath.Join(hivePath, "temp.cp"))
 	if err != nil {
 		panic(err)
 	}
+
+	stateStatus.isReplicating()
 
 	s.namespace.mu.RLock()
 	namespace := maps.Clone(s.namespace.entries)
@@ -277,6 +302,8 @@ func (s *persistentState) flushState(handle uint64) {
 	s.chunkTable.mu.RLock()
 	chunkTable := maps.Clone(s.chunkTable.entries)
 	s.chunkTable.mu.RUnlock()
+
+	stateStatus.doneReplicating()
 
 	const maxMem = 1024 * 1024 * 100
 
@@ -373,13 +400,13 @@ func (s *persistentState) flushState(handle uint64) {
 
 	err = os.Rename(
 		file.Name(),
-		filepath.Join(s.hivePath, strconv.FormatUint(handle, 10)+".cp"),
+		filepath.Join(hivePath, strconv.FormatUint(handle, 10)+".cp"),
 	)
 	if err != nil {
 		panic(err)
 	}
 
-	dir, err := os.Open(s.hivePath)
+	dir, err := os.Open(hivePath)
 	if err != nil {
 		panic(err)
 	}
@@ -438,7 +465,10 @@ func (s *persistentState) applyOp(op *messages.OperationRec) {
 		s.namespace.mu.RLock()
 		if node, ok := s.namespace.entries[op.Args[0]]; ok {
 			node.Lock()
-			node.chunkHandles = append(node.chunkHandles, parseUint64(op.Args[1]))
+			handle := parseUint64(op.Args[1])
+			if !slices.Contains(node.chunkHandles, handle) {
+				node.chunkHandles = append(node.chunkHandles, handle)
+			}
 			node.Unlock()
 		}
 		s.namespace.mu.RUnlock()
@@ -524,6 +554,10 @@ func (s *persistentState) applyOp(op *messages.OperationRec) {
 		}
 		s.chunkTable.mu.Unlock()
 	}
+}
+
+func (s *persistentState) checkSum(data []byte) uint32 {
+	return crc32.Checksum(data, s.crc32Table)
 }
 
 func (s *persistentState) replayLog(file *os.File) int64 {
@@ -686,4 +720,63 @@ func parseUint32(s string) uint32 {
 		panic(err)
 	}
 	return uint32(num)
+}
+
+func init() {
+
+	hivePath = func() string {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+
+		hivePath := filepath.Join(home, ".hiveFS")
+		if err := os.MkdirAll(hivePath, 0755); err != nil {
+			panic(err)
+		}
+
+		return hivePath
+	}()
+
+	stateStatus = &syncState{
+		checkpointSig: make(chan uint64, 1),
+	}
+
+	logger = &opLog{
+		crc32Table: crc32.MakeTable(crc32.Castagnoli),
+	}
+
+	func() {
+
+		files, err := os.ReadDir(hivePath)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, file := range files {
+
+			if name, ok := strings.CutSuffix(file.Name(), ".log"); ok {
+				if n, err := strconv.ParseUint(name, 10, 64); err == nil {
+					logHandle.Store(max(logHandle.Load(), n))
+				}
+			}
+
+			if name, ok := strings.CutSuffix(file.Name(), ".cp"); ok {
+				if n, err := strconv.ParseUint(name, 10, 64); err == nil {
+					logHandle.Store(max(logHandle.Load(), n))
+				}
+			}
+		}
+
+		newLogName := strconv.FormatUint(newLogHandle(), 10) + ".log"
+		newLog, err := os.Create(filepath.Join(hivePath, newLogName))
+		if err != nil {
+			panic(err)
+		}
+
+		logger.logMu = sync.Mutex{}
+		logger.logFile = newLog
+
+	}()
+
 }

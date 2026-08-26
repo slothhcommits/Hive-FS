@@ -95,6 +95,10 @@ func (ns *namespace) pathDepth(path string) uint {
 	return uint(strings.Count(path, "/"))
 }
 
+func (ns *namespace) expand(lockReqs []*lockReq) {
+
+}
+
 func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 
 	lockReqs = append(lockReqs, &lockReq{path: "/", read: true, noOp: false, op: ns.mkdirP})
@@ -193,6 +197,7 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 }
 
 func (ns *namespace) mkdirP(path string) error {
+
 	ns.mu.RLock()
 	f, ok := ns.entries[path]
 	ns.mu.RUnlock()
