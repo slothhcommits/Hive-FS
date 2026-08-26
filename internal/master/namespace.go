@@ -3,6 +3,7 @@ package master
 import (
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -11,9 +12,39 @@ type metadata struct {
 	chunkHandles []uint64
 }
 
+func (m *metadata) appendChunkHandle(tx *transaction, path string, handle uint64) {
+
+	tx.addOp(&operation{
+		t:    APPEND_CHUNK,
+		args: []string{path, strconv.FormatUint(handle, 10)},
+	})
+
+	tx.addFunc(func() {
+		m.chunkHandles = append(m.chunkHandles, handle)
+	})
+}
+
+// all validation to be done in caller
+func (m *metadata) replaceChunkHandle(tx *transaction, path string, idx int, oldHandle uint64, newHandle uint64) {
+
+	tx.addOp(&operation{
+		t: REPLACE_CHUNK,
+		args: []string{
+			path,
+			strconv.FormatUint(uint64(idx), 10),
+			strconv.FormatUint(oldHandle, 10),
+			strconv.FormatUint(newHandle, 10),
+		},
+	})
+
+	tx.addFunc(func() {
+		m.chunkHandles[idx] = newHandle
+	})
+}
+
 type node struct {
-	dir bool
 	sync.RWMutex
+	dir bool
 	metadata
 }
 
@@ -37,8 +68,6 @@ func newLockManager() *lockManager {
 type lockReq struct {
 	path string
 	read bool
-	noOp bool
-	op   func(string) error
 }
 
 const (
@@ -95,13 +124,9 @@ func (ns *namespace) pathDepth(path string) uint {
 	return uint(strings.Count(path, "/"))
 }
 
-func (ns *namespace) expand(lockReqs []*lockReq) {
+func (ns *namespace) expand(lockReqs []*lockReq) []*lockReq {
 
-}
-
-func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
-
-	lockReqs = append(lockReqs, &lockReq{path: "/", read: true, noOp: false, op: ns.mkdirP})
+	lockReqs = append(lockReqs, &lockReq{path: "/", read: true})
 
 	set := make(map[string]struct{})
 	set["/"] = struct{}{}
@@ -124,7 +149,7 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 			currStr = strings.Join([]string{currStr, seg}, "/")
 			if _, ok := set[currStr]; !ok {
 				if j != len(segs)-2 {
-					lockReqs = append(lockReqs, &lockReq{path: currStr, read: true, noOp: false, op: lockReqs[i].op})
+					lockReqs = append(lockReqs, &lockReq{path: currStr, read: true})
 				}
 				set[currStr] = struct{}{}
 			}
@@ -139,6 +164,11 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 		}
 		return strings.Compare(lockReqs[i].path, lockReqs[j].path) < 0
 	})
+
+	return lockReqs
+}
+
+func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 
 	release := func(lockReqs []*lockReq) {
 
@@ -163,7 +193,7 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 		}
 	}
 
-	for i, req := range lockReqs {
+	for _, req := range lockReqs {
 
 		var l *lock
 		var ok bool
@@ -183,12 +213,13 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 			l.Lock()
 		}
 
-		if !req.noOp {
-			if err := req.op(req.path); err != nil {
-				release(lockReqs[:i+1])
-				return nil, err
-			}
-		}
+		// TODO: look out for transaction rollback
+		// if !req.noOp {
+		// 	if err := req.op(req.path); err != nil {
+		// 		release(lockReqs[:i+1])
+		// 		return nil, err
+		// 	}
+		// }
 	}
 
 	return func() {
@@ -196,15 +227,23 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 	}, nil
 }
 
-func (ns *namespace) mkdirP(path string) error {
+func (ns *namespace) mkdirP(tx *transaction, path string) error {
 
 	ns.mu.RLock()
 	f, ok := ns.entries[path]
 	ns.mu.RUnlock()
 	if !ok {
-		ns.mu.Lock()
-		ns.entries[path] = &node{dir: true}
-		ns.mu.Unlock()
+
+		tx.addOp(&operation{
+			t:    CREATE_DIR,
+			args: []string{path},
+		})
+		tx.addFunc(func() {
+			ns.mu.Lock()
+			ns.entries[path] = &node{dir: true}
+			ns.mu.Unlock()
+		})
+
 	} else if !f.dir {
 		return &ErrInvalidPath{}
 	}
@@ -212,25 +251,49 @@ func (ns *namespace) mkdirP(path string) error {
 	return nil
 }
 
-func (ns *namespace) create(path string, f *node) error {
+func (ns *namespace) create(tx *transaction, path string) error {
 
 	if !ns.validatePath(path) {
 		return &ErrInvalidPath{}
 	}
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: false, noOp: true, op: ns.mkdirP}})
+	lockReqs := []*lockReq{{path: path, read: false}}
+
+	lockReqs = ns.expand(lockReqs)
+
+	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+
+	tx.addRB(unlock)
+
+	for _, req := range lockReqs[:len(lockReqs)-1] {
+		if err := ns.mkdirP(tx, req.path); err != nil {
+			return err
+		}
+	}
 
 	ns.mu.RLock()
 	_, ok := ns.entries[path]
 	ns.mu.RUnlock()
 	if !ok {
-		ns.mu.Lock()
-		ns.entries[path] = f
-		ns.mu.Unlock()
+
+		tx.addOp(&operation{
+			t:    CREATE_FILE,
+			args: []string{path},
+		})
+
+		tx.addFunc(func() {
+			ns.mu.Lock()
+			ns.entries[path] = &node{
+				dir:      false,
+				metadata: metadata{},
+			}
+			ns.mu.Unlock()
+			unlock()
+		})
+
 	} else {
 		return &ErrObjectExist{}
 	}
@@ -238,7 +301,7 @@ func (ns *namespace) create(path string, f *node) error {
 	return nil
 }
 
-func (ns *namespace) checkExist(path string) error {
+func (ns *namespace) checkAncestor(path string) error {
 	ns.mu.RLock()
 	node, ok := ns.entries[path]
 	ns.mu.RUnlock()
@@ -257,7 +320,12 @@ func (ns *namespace) lookup(path string) (*node, func(), error) {
 		return nil, nil, &ErrInvalidPath{}
 	}
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: true, noOp: true, op: ns.checkExist}})
+	lockReqs := []*lockReq{
+		{path: path, read: true},
+	}
+	lockReqs = ns.expand(lockReqs)
+
+	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		unlock()
 		return nil, nil, err
@@ -315,17 +383,70 @@ func (ns *namespace) prefixScan(prefix string) []string {
 	return nodes
 }
 
-func (ns *namespace) move(src, dst string) error {
+func (ns *namespace) moveNodes(tx *transaction, list []*struct {
+	src string
+	dst string
+}) {
+
+	for _, ele := range list {
+		tx.addOp(&operation{
+			t:    MOVE,
+			args: []string{ele.src, ele.dst},
+		})
+	}
+
+	tx.addFunc(func() {
+		ns.mu.Lock()
+		for _, ele := range list {
+			srcNode := ns.entries[ele.src]
+			delete(ns.entries, ele.src)
+			ns.entries[ele.dst] = srcNode
+		}
+		ns.mu.Unlock()
+	})
+}
+
+func (ns *namespace) move(tx *transaction, src, dst string) error {
 
 	if !ns.validatePath(src) || !ns.validatePath(dst) || ns.isAncestor(src, dst) {
 		return &ErrInvalidPath{}
 	}
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: src, read: false, noOp: true, op: ns.checkExist}, {path: dst, read: false, noOp: true, op: ns.mkdirP}})
+	fullSet := []*lockReq{
+		{path: src, read: false},
+		{path: dst, read: false},
+	}
+
+	fullSet = ns.expand(fullSet)
+
+	unlock, err := ns.acquireLocks(fullSet)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	tx.addRB(unlock)
+
+	srcSet := []*lockReq{
+		{path: src, read: false},
+	}
+	srcSet = ns.expand(srcSet)
+
+	dstSet := []*lockReq{
+		{path: dst, read: false},
+	}
+
+	dstSet = ns.expand(dstSet)
+
+	for _, ele := range srcSet[:len(src)-1] {
+		if err := ns.checkAncestor(ele.path); err != nil {
+			return err
+		}
+	}
+
+	for _, ele := range dstSet {
+		if err := ns.mkdirP(tx, ele.path); err != nil {
+			return err
+		}
+	}
 
 	var srcNode, dstNode *node
 
@@ -351,19 +472,18 @@ func (ns *namespace) move(src, dst string) error {
 
 	case !srcNode.dir && !dstNode.dir:
 
-		ns.mu.Lock()
-		delete(ns.entries, src)
-		ns.entries[dst] = srcNode
-		ns.mu.Unlock()
+		ns.moveNodes(tx, []*struct {
+			src string
+			dst string
+		}{{src: src, dst: dst}})
 
 	case !srcNode.dir && dstNode.dir:
 
 		newPath := dst + "/" + src[strings.LastIndex(src, "/")+1:]
-
-		ns.mu.Lock()
-		delete(ns.entries, src)
-		ns.entries[newPath] = srcNode
-		ns.mu.Unlock()
+		ns.moveNodes(tx, []*struct {
+			src string
+			dst string
+		}{{src: src, dst: newPath}})
 
 	case srcNode.dir && dstNode.dir:
 
@@ -376,19 +496,58 @@ func (ns *namespace) move(src, dst string) error {
 			newPrefix = dst + "/" + src[strings.LastIndex(src, "/")+1:]
 		}
 
-		ns.mu.Lock()
+		list := []*struct {
+			src string
+			dst string
+		}{}
+
 		for _, path := range contents {
-			node := ns.entries[path]
-			delete(ns.entries, path)
-			ns.entries[newPrefix+strings.TrimPrefix(path, src)] = node
+			list = append(list, &struct {
+				src string
+				dst string
+			}{src: path, dst: newPrefix + strings.TrimPrefix(path, src)})
 		}
-		ns.mu.Unlock()
+
+		ns.moveNodes(tx, list)
 	}
+
+	tx.addFunc(unlock)
 
 	return nil
 }
 
-func (ns *namespace) snapshot(src, dst string) error {
+func (ns *namespace) snapshotNodes(tx *transaction, list []*struct {
+	src string
+	dst string
+}) {
+
+	for _, ele := range list {
+		tx.addOp(&operation{
+			t:    SNAPSHOT,
+			args: []string{ele.src, ele.dst},
+		})
+	}
+
+	tx.addFunc(func() {
+		ns.mu.Lock()
+		for _, ele := range list {
+			// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
+			// TODO: copy any metadata or node slices explicitly to avoid shallow copy
+			srcNode := ns.entries[ele.src]
+			srcNode.RLock()
+			ns.entries[ele.dst] = &node{
+				dir: srcNode.dir,
+				metadata: metadata{
+					chunkHandles: slices.Clone(srcNode.chunkHandles),
+				},
+			}
+			srcNode.RUnlock()
+		}
+		ns.mu.Unlock()
+	})
+}
+
+func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 
 	if !ns.validatePath(src) ||
 		!ns.validatePath(dst) ||
@@ -396,16 +555,27 @@ func (ns *namespace) snapshot(src, dst string) error {
 		return &ErrInvalidPath{}
 	}
 
-	unlock, err := ns.acquireLocks(
-		[]*lockReq{
-			{path: src, read: false, noOp: true, op: ns.checkExist},
-			{path: dst, read: false, noOp: true, op: ns.checkExist},
-		},
-	)
+	lockReqs := []*lockReq{
+		{path: src, read: false},
+		{path: dst, read: false},
+	}
+
+	lockReqs = ns.expand(lockReqs)
+
+	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	tx.addRB(unlock)
+
+	for _, req := range lockReqs {
+
+		if req.path != src && req.path != dst {
+			if err := ns.checkAncestor(req.path); err != nil {
+				return err
+			}
+		}
+	}
 
 	var srcNode *node
 
@@ -429,46 +599,57 @@ func (ns *namespace) snapshot(src, dst string) error {
 
 	case !srcNode.dir:
 
-		ns.mu.Lock()
 		// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
 		// TODO: copy any metadata or node slices explicitly to avoid shallow copy
-		ns.entries[dst] = &node{
-			dir:      srcNode.dir,
-			metadata: srcNode.metadata,
-		}
-		ns.mu.Unlock()
+		ns.snapshotNodes(tx, []*struct {
+			src string
+			dst string
+		}{{src: src, dst: dst}})
 
 	case srcNode.dir:
 
+		// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
+		// TODO: copy any metadata or node slices explicitly to avoid shallow copy
+
 		contents := ns.prefixScan(src)
 
-		ns.mu.Lock()
+		list := []*struct {
+			src string
+			dst string
+		}{}
+
 		for _, path := range contents {
-			// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
-			// TODO: copy any metadata or node slices explicitly to avoid shallow copy
-			pathNode := ns.entries[path]
-			pathNode.RLock()
-			ns.entries[dst+strings.TrimPrefix(path, src)] = &node{
-				dir: pathNode.dir,
-				metadata: metadata{
-					chunkHandles: slices.Clone(pathNode.chunkHandles),
-				},
-			}
-			pathNode.RUnlock()
+			list = append(list, &struct {
+				src string
+				dst string
+			}{src: path, dst: dst + strings.TrimPrefix(path, src)})
 		}
-		ns.mu.Unlock()
+
+		ns.snapshotNodes(tx, list)
+
 	}
+
+	tx.addFunc(unlock)
 
 	return nil
 }
 
 func (ns *namespace) list(path string) ([]*node, error) {
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: true, noOp: true, op: ns.checkExist}})
+	lockReqs := []*lockReq{{path: path, read: true}}
+	lockReqs = ns.expand(lockReqs)
+
+	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+
+	for _, req := range lockReqs[:len(lockReqs)-1] {
+		if err := ns.checkAncestor(req.path); err != nil {
+			return nil, err
+		}
+	}
 
 	var nodes []*node
 
@@ -486,20 +667,42 @@ func (ns *namespace) list(path string) ([]*node, error) {
 }
 
 // TODO: tombstone and gc
-func (ns *namespace) delete(path string) error {
+func (ns *namespace) delete(tx *transaction, path string) error {
 
-	unlock, err := ns.acquireLocks([]*lockReq{{path: path, read: false, noOp: true, op: ns.checkExist}})
+	lockReqs := []*lockReq{{path: path, read: false}}
+
+	lockReqs = ns.expand(lockReqs)
+
+	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	tx.addRB(unlock)
 
-	paths := ns.prefixScan(path)
-	ns.mu.Lock()
-	for _, p := range paths {
-		delete(ns.entries, p)
+	for _, req := range lockReqs[:len(lockReqs)-1] {
+		if err := ns.checkAncestor(req.path); err != nil {
+			return err
+		}
 	}
-	ns.mu.Unlock()
+
+	contents := ns.prefixScan(path)
+
+	// TODO : should be moved to tombstone val but will do that when implement GC
+	for _, path := range contents {
+		tx.addOp(&operation{
+			t:    REMOVE,
+			args: []string{path},
+		})
+	}
+
+	tx.addFunc(func() {
+		ns.mu.Lock()
+		for _, p := range contents {
+			delete(ns.entries, p)
+		}
+		ns.mu.Unlock()
+		unlock()
+	})
 
 	return nil
 }

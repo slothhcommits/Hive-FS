@@ -58,6 +58,40 @@ type operation struct {
 	args []string
 }
 
+type transaction struct {
+	ops       []*operation
+	exec      []func()
+	rollbacks []func()
+}
+
+func (tx *transaction) addOp(op *operation) {
+	tx.ops = append(tx.ops, op)
+}
+
+func (tx *transaction) addFunc(fn func()) {
+	tx.exec = append(tx.exec, fn)
+}
+
+func (tx *transaction) addRB(fn func()) {
+	tx.rollbacks = append(tx.rollbacks, fn)
+}
+
+// be careful about the order
+func (tx *transaction) commit() {
+	logger.log(tx.ops)
+	defer stateStatus.doneMutating()
+	for _, fn := range tx.exec {
+		fn()
+	}
+}
+
+// be careful about the order
+func (tx *transaction) rollback() {
+	for _, rb := range tx.rollbacks {
+		rb()
+	}
+}
+
 const (
 	checkpointDelim uint32 = 0
 	maxLogSize      int64  = 1024 * 1024 * 10
@@ -99,7 +133,7 @@ func (l *opLog) checkSum(data []byte) uint32 {
 
 /*
 
-Operation flow : 
+Operation flow :
 
 0. expand the path
 1. acquire locks
@@ -113,9 +147,9 @@ does not exist ? make or err
 */
 
 /*
- 
-Here : defer doneMutating in caller, 
-call-once meaning two consecutive calls to log() should have one doneMutating() call. 
+
+Here : defer doneMutating in caller,
+call-once meaning two consecutive calls to log() should have one doneMutating() call.
 Ops should be batched and logged
 
 */
@@ -217,10 +251,11 @@ func (s *persistentState) buildState() {
 	var logs []uint64
 	var checkpoint uint64 = 0
 
+	currLogHandle := logHandle.Load()
 	for _, file := range files {
 
 		if name, ok := strings.CutSuffix(file.Name(), ".log"); ok {
-			if n, err := strconv.ParseUint(name, 10, 64); err == nil && n != logHandle.Load() {
+			if n, err := strconv.ParseUint(name, 10, 64); err == nil && n != currLogHandle {
 				logs = append(logs, n)
 			}
 		}

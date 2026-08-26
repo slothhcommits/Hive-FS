@@ -3,6 +3,7 @@ package master
 import (
 	"math/rand/v2"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,43 @@ func (c *chunk) getLocations(exclude []string) []string {
 	return locations
 }
 
+func (c *chunk) updateRef(tx *transaction, ref uint32) {
+
+	tx.addOp(&operation{
+		t:    UPDATE_REF,
+		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(ref), 10)},
+	})
+
+	tx.addFunc(func() {
+		c.ref = ref
+	})
+
+}
+
+func (c *chunk) updateVersion(tx *transaction, ver uint32) {
+
+	tx.addOp(&operation{
+		t:    UPDATE_VERSION,
+		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(ver), 10)},
+	})
+
+	tx.addFunc(func() {
+		c.version = ver
+	})
+}
+
+func (c *chunk) updateRep(tx *transaction, rep uint32) {
+
+	tx.addOp(&operation{
+		t:    UPDATE_REP,
+		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(rep), 10)},
+	})
+
+	tx.addFunc(func() {
+		c.repFactor = rep
+	})
+}
+
 type chunkTable struct {
 	mu      sync.RWMutex
 	entries map[uint64]*chunk
@@ -84,31 +122,41 @@ func newChunkTable() *chunkTable {
 // 	return chunk, nil
 // }
 
-// func (ct *chunkTable) addChunk(id uint64, c *chunk) error {
+func (ct *chunkTable) addChunk(tx *transaction, c *chunk) {
 
-// 	ct.mu.Lock()
-// 	defer ct.mu.Unlock()
-// 	_, ok := ct.entries[id]
-// 	if ok {
-// 		return &ErrObjectExist{}
-// 	}
+	tx.addOp(&operation{
+		t: CREATE_CHUNK,
+		args: []string{strconv.FormatUint(c.id, 10),
+			strconv.FormatUint(uint64(c.ref), 10),
+			strconv.FormatUint(uint64(c.version), 10),
+			strconv.FormatUint(uint64(c.repFactor), 10)},
+	})
 
-// 	ct.entries[id] = c
-// 	return nil
-// }
+	tx.addFunc(func() {
+		ct.mu.Lock()
+		_, ok := ct.entries[c.id]
+		if !ok {
+			ct.entries[c.id] = c
 
-// func (ct *chunkTable) remove(id uint64) error {
+		}
+		ct.mu.Unlock()
+	})
+}
 
-// 	ct.mu.Lock()
-// 	defer ct.mu.Unlock()
-// 	_, ok := ct.entries[id]
-// 	if !ok {
-// 		return &ErrNotFound{}
-// 	}
+func (ct *chunkTable) remove(tx *transaction, handle uint64) {
 
-// 	delete(ct.entries, id)
-// 	return nil
-// }
+	tx.addOp(&operation{
+		t:    DELETE_CHUNK,
+		args: []string{strconv.FormatUint(handle, 10)},
+	})
+
+	tx.addFunc(func() {
+		ct.mu.Lock()
+		delete(ct.entries, handle)
+		ct.mu.Unlock()
+	})
+	
+}
 
 // TODO: drop stale replicas
 func (ct *chunkTable) updateLocations(hb *messages.Heartbeat) {

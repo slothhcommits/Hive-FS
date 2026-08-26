@@ -37,11 +37,11 @@ func newMaster(opts *MasterOpts) *master {
 	return &master{
 
 		MasterOpts: opts,
-		
-		transport:  hive.NewTCPTransport(),
+
+		transport: hive.NewTCPTransport(),
 
 		persistentState: newPersistentState(),
-		
+
 		csr: newChunkServerRegistry(),
 	}
 }
@@ -121,14 +121,12 @@ func (m *master) createHandler(msg *hive.Message) *hive.Message {
 		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	f := &node{
-		dir:      false,
-		metadata: metadata{},
-	}
-
-	if err := m.namespace.create(req.Path, f); err != nil {
+	tx := &transaction{}
+	if err := m.namespace.create(tx, req.Path); err != nil {
+		tx.rollback()
 		return makeErrMessage(uint8(messages.Error_CODE_CREATE_FILE_FAILED), err)
 	}
+	tx.commit()
 
 	payload, err := proto.Marshal(&messages.CreateFileAck{
 		Success: true,
@@ -148,9 +146,12 @@ func (m *master) createHandler(msg *hive.Message) *hive.Message {
 	return res
 }
 
-func (m *master) addNewChunk(file *node) error {
+func (m *master) addNewChunk(path string, file *node) error {
+
+	tx := &transaction{}
 
 	chunk := newChunk()
+
 	servers, err := m.csr.getServers(chunk.repFactor, []string{})
 	if err != nil {
 		return err
@@ -165,12 +166,12 @@ func (m *master) addNewChunk(file *node) error {
 		return err
 	}
 
-	m.chunkTable.mu.Lock()
-	m.chunkTable.entries[chunk.id] = chunk
-	m.chunkTable.mu.Unlock()
-
-	file.chunkHandles = append(file.chunkHandles, chunk.id)
+	chunk.version++
 	chunk.ref++
+	file.appendChunkHandle(tx, path, chunk.id)
+	m.chunkTable.addChunk(tx, chunk)
+
+	tx.commit()
 
 	return nil
 }
@@ -203,7 +204,7 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		file.Lock()
 
 		if uint32(len(file.chunkHandles)) == req.ChunkIdx {
-			if err := m.addNewChunk(file); err != nil {
+			if err := m.addNewChunk(req.Path, file); err != nil {
 				file.Unlock()
 				return makeErrMessage(uint8(messages.Error_CODE_CHUNKSERVERS_UNAVAILABLE), err)
 			}
@@ -236,6 +237,9 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 					chunk.Unlock()
 					return makeErrMessage(uint8(messages.Error_CODE_CHUNKSERVERS_UNAVAILABLE), err)
 				}
+				tx := &transaction{}
+				chunk.updateVersion(tx, chunk.version+1)
+				tx.commit()
 			}
 			chunk.Unlock()
 
@@ -397,7 +401,6 @@ func (m *master) grantLease(c *chunk) error {
 	for _, server := range acked {
 		c.locations[server] = time.Now()
 	}
-	c.version++
 
 	return nil
 }
