@@ -26,9 +26,8 @@ type Chunkserver_MessageType int32
 const (
 	Chunkserver_MESSAGE_TYPE_UNSPECIFIED Chunkserver_MessageType = 0
 	// master message types
-	Chunkserver_MESSAGE_TYPE_HEARTBEAT          Chunkserver_MessageType = 51
-	Chunkserver_MESSAGE_TYPE_UPDATE_VERSION_ACK Chunkserver_MessageType = 52
-	Chunkserver_MESSAGE_TYPE_LEASE_GRANT_ACK    Chunkserver_MessageType = 53
+	Chunkserver_MESSAGE_TYPE_HEARTBEAT Chunkserver_MessageType = 51
+	Chunkserver_MESSAGE_TYPE_OP_ACK    Chunkserver_MessageType = 52
 )
 
 // Enum value maps for Chunkserver_MessageType.
@@ -36,14 +35,12 @@ var (
 	Chunkserver_MessageType_name = map[int32]string{
 		0:  "MESSAGE_TYPE_UNSPECIFIED",
 		51: "MESSAGE_TYPE_HEARTBEAT",
-		52: "MESSAGE_TYPE_UPDATE_VERSION_ACK",
-		53: "MESSAGE_TYPE_LEASE_GRANT_ACK",
+		52: "MESSAGE_TYPE_OP_ACK",
 	}
 	Chunkserver_MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNSPECIFIED":        0,
-		"MESSAGE_TYPE_HEARTBEAT":          51,
-		"MESSAGE_TYPE_UPDATE_VERSION_ACK": 52,
-		"MESSAGE_TYPE_LEASE_GRANT_ACK":    53,
+		"MESSAGE_TYPE_UNSPECIFIED": 0,
+		"MESSAGE_TYPE_HEARTBEAT":   51,
+		"MESSAGE_TYPE_OP_ACK":      52,
 	}
 )
 
@@ -232,27 +229,27 @@ func (x *Heartbeat) GetChunks() []*ChunkInfo {
 	return nil
 }
 
-type UpdateVersionAck struct {
+type ChunkserverOpAck struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateVersionAck) Reset() {
-	*x = UpdateVersionAck{}
+func (x *ChunkserverOpAck) Reset() {
+	*x = ChunkserverOpAck{}
 	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateVersionAck) String() string {
+func (x *ChunkserverOpAck) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateVersionAck) ProtoMessage() {}
+func (*ChunkserverOpAck) ProtoMessage() {}
 
-func (x *UpdateVersionAck) ProtoReflect() protoreflect.Message {
+func (x *ChunkserverOpAck) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -264,56 +261,12 @@ func (x *UpdateVersionAck) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateVersionAck.ProtoReflect.Descriptor instead.
-func (*UpdateVersionAck) Descriptor() ([]byte, []int) {
+// Deprecated: Use ChunkserverOpAck.ProtoReflect.Descriptor instead.
+func (*ChunkserverOpAck) Descriptor() ([]byte, []int) {
 	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *UpdateVersionAck) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-type GrantLeaseAck struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GrantLeaseAck) Reset() {
-	*x = GrantLeaseAck{}
-	mi := &file_gfs_v1_chunkserver_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GrantLeaseAck) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GrantLeaseAck) ProtoMessage() {}
-
-func (x *GrantLeaseAck) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_chunkserver_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GrantLeaseAck.ProtoReflect.Descriptor instead.
-func (*GrantLeaseAck) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *GrantLeaseAck) GetSuccess() bool {
+func (x *ChunkserverOpAck) GetSuccess() bool {
 	if x != nil {
 		return x.Success
 	}
@@ -324,13 +277,12 @@ var File_gfs_v1_chunkserver_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\n" +
-	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\"\x9e\x01\n" +
-	"\vChunkserver\"\x8e\x01\n" +
+	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\"o\n" +
+	"\vChunkserver\"`\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16MESSAGE_TYPE_HEARTBEAT\x103\x12#\n" +
-	"\x1fMESSAGE_TYPE_UPDATE_VERSION_ACK\x104\x12 \n" +
-	"\x1cMESSAGE_TYPE_LEASE_GRANT_ACK\x105\"X\n" +
+	"\x16MESSAGE_TYPE_HEARTBEAT\x103\x12\x17\n" +
+	"\x13MESSAGE_TYPE_OP_ACK\x104\"X\n" +
 	"\tChunkInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\x12!\n" +
@@ -339,9 +291,7 @@ const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x1b\n" +
 	"\tdisk_util\x18\x02 \x01(\rR\bdiskUtil\x12)\n" +
 	"\x06chunks\x18\x03 \x03(\v2\x11.gfs.v1.ChunkInfoR\x06chunks\",\n" +
-	"\x10UpdateVersionAck\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\")\n" +
-	"\rGrantLeaseAck\x12\x18\n" +
+	"\x10ChunkserverOpAck\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccessB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
@@ -357,14 +307,13 @@ func file_gfs_v1_chunkserver_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_chunkserver_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_gfs_v1_chunkserver_proto_goTypes = []any{
 	(Chunkserver_MessageType)(0), // 0: gfs.v1.Chunkserver.MessageType
 	(*Chunkserver)(nil),          // 1: gfs.v1.Chunkserver
 	(*ChunkInfo)(nil),            // 2: gfs.v1.ChunkInfo
 	(*Heartbeat)(nil),            // 3: gfs.v1.Heartbeat
-	(*UpdateVersionAck)(nil),     // 4: gfs.v1.UpdateVersionAck
-	(*GrantLeaseAck)(nil),        // 5: gfs.v1.GrantLeaseAck
+	(*ChunkserverOpAck)(nil),     // 4: gfs.v1.ChunkserverOpAck
 }
 var file_gfs_v1_chunkserver_proto_depIdxs = []int32{
 	2, // 0: gfs.v1.Heartbeat.chunks:type_name -> gfs.v1.ChunkInfo
@@ -386,7 +335,7 @@ func file_gfs_v1_chunkserver_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_chunkserver_proto_rawDesc), len(file_gfs_v1_chunkserver_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

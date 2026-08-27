@@ -79,6 +79,7 @@ const (
 	Error_CODE_LENGTH_EXCEEDED          Error_Code = 3
 	Error_CODE_CHUNKSERVERS_UNAVAILABLE Error_Code = 4
 	Error_CODE_LEASE_GRANT_FAILED       Error_Code = 5
+	Error_CODE_SNAPSHOT_FAILED          Error_Code = 6
 )
 
 // Enum value maps for Error_Code.
@@ -91,6 +92,7 @@ var (
 		3:   "CODE_LENGTH_EXCEEDED",
 		4:   "CODE_CHUNKSERVERS_UNAVAILABLE",
 		5:   "CODE_LEASE_GRANT_FAILED",
+		6:   "CODE_SNAPSHOT_FAILED",
 	}
 	Error_Code_value = map[string]int32{
 		"CODE_UNSPECIFIED":              0,
@@ -100,6 +102,7 @@ var (
 		"CODE_LENGTH_EXCEEDED":          3,
 		"CODE_CHUNKSERVERS_UNAVAILABLE": 4,
 		"CODE_LEASE_GRANT_FAILED":       5,
+		"CODE_SNAPSHOT_FAILED":          6,
 	}
 )
 
@@ -186,13 +189,13 @@ var File_gfs_v1_errors_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_errors_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/errors.proto\x12\x06gfs.v1\"\xd9\x02\n" +
+	"\x13gfs/v1/errors.proto\x12\x06gfs.v1\"\xf3\x02\n" +
 	"\x05Error\x12&\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x12.gfs.v1.Error.CodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"D\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
-	"\x12MESSAGE_TYPE_ERROR\x10\xc7\x01\"\xc7\x01\n" +
+	"\x12MESSAGE_TYPE_ERROR\x10\xc7\x01\"\xe1\x01\n" +
 	"\x04Code\x12\x14\n" +
 	"\x10CODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x15CODE_UNMARSHAL_FAILED\x10\x97\x01\x12\x1b\n" +
@@ -200,7 +203,8 @@ const file_gfs_v1_errors_proto_rawDesc = "" +
 	"\x12CODE_LOOKUP_FAILED\x10\x02\x12\x18\n" +
 	"\x14CODE_LENGTH_EXCEEDED\x10\x03\x12!\n" +
 	"\x1dCODE_CHUNKSERVERS_UNAVAILABLE\x10\x04\x12\x1b\n" +
-	"\x17CODE_LEASE_GRANT_FAILED\x10\x05B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x17CODE_LEASE_GRANT_FAILED\x10\x05\x12\x18\n" +
+	"\x14CODE_SNAPSHOT_FAILED\x10\x06B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_errors_proto_rawDescOnce sync.Once

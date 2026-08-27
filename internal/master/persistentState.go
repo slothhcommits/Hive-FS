@@ -78,11 +78,7 @@ func (tx *transaction) addRB(fn func()) {
 
 // be careful about the order
 func (tx *transaction) commit() {
-	logger.log(tx.ops)
-	defer stateStatus.doneMutating()
-	for _, fn := range tx.exec {
-		fn()
-	}
+	logger.logAndApply(tx.ops, tx.exec)
 }
 
 // be careful about the order
@@ -131,30 +127,7 @@ func (l *opLog) checkSum(data []byte) uint32 {
 	return crc32.Checksum(data, l.crc32Table)
 }
 
-/*
-
-Operation flow :
-
-0. expand the path
-1. acquire locks
-2. check exist
-exist ? file or dir?
-does not exist ? make or err
-3. collect ops.
-4. log ops
-5. apply ops
-
-*/
-
-/*
-
-Here : defer doneMutating in caller,
-call-once meaning two consecutive calls to log() should have one doneMutating() call.
-Ops should be batched and logged
-
-*/
-
-func (l *opLog) log(operations []*operation) {
+func (l *opLog) logAndApply(operations []*operation, exec []func()) {
 
 	log := messages.Log{Recs: []*messages.OperationRec{}}
 	for _, op := range operations {
@@ -166,34 +139,43 @@ func (l *opLog) log(operations []*operation) {
 	}
 
 	var buf bytes.Buffer
+	if len(log.Recs) > 0 {
 
-	logBuf, err := proto.Marshal(&log)
-	if err != nil {
-		panic(err)
-	}
+		logBuf, err := proto.Marshal(&log)
+		if err != nil {
+			panic(err)
+		}
 
-	binary.Write(&buf, binary.BigEndian, l.checkSum(logBuf))
-	binary.Write(&buf, binary.BigEndian, uint32(len(logBuf)))
-	_, err = buf.Write(logBuf)
-	if err != nil {
-		panic(err)
+		binary.Write(&buf, binary.BigEndian, l.checkSum(logBuf))
+		binary.Write(&buf, binary.BigEndian, uint32(len(logBuf)))
+		_, err = buf.Write(logBuf)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	l.logMu.Lock()
 
-	info, err := l.logFile.Stat()
-	if err != nil {
-		panic(err)
-	}
+	if buf.Len() > 0 {
+		info, err := l.logFile.Stat()
+		if err != nil {
+			panic(err)
+		}
 
-	if info.Size() > maxLogSize {
-		l.rotateLog()
-	}
+		if info.Size() > maxLogSize {
+			l.rotateLog()
+		}
 
-	writeFile(buf.Bytes(), l.logFile)
+		writeFile(buf.Bytes(), l.logFile)
+	}
 
 	stateStatus.isMutating()
 	l.logMu.Unlock()
+
+	for _, fn := range exec {
+		fn()
+	}
+	stateStatus.doneMutating()
 }
 
 func (l *opLog) rotateLog() {

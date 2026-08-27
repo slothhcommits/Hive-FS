@@ -314,10 +314,10 @@ func (ns *namespace) checkAncestor(path string) error {
 	return nil
 }
 
-func (ns *namespace) lookup(path string) (*node, func(), error) {
+func (ns *namespace) lookup(tx *transaction, path string) (*node, error) {
 
 	if !ns.validatePath(path) {
-		return nil, nil, &ErrInvalidPath{}
+		return nil, &ErrInvalidPath{}
 	}
 
 	lockReqs := []*lockReq{
@@ -328,7 +328,7 @@ func (ns *namespace) lookup(path string) (*node, func(), error) {
 	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
 		unlock()
-		return nil, nil, err
+		return nil, err
 	}
 
 	var f *node
@@ -337,10 +337,12 @@ func (ns *namespace) lookup(path string) (*node, func(), error) {
 	ns.mu.RUnlock()
 	if !ok {
 		unlock()
-		return nil, nil, &ErrNotFound{}
+		return nil, &ErrNotFound{}
 	}
 
-	return f, unlock, nil
+	tx.addFunc(unlock)
+	
+	return f, nil
 }
 
 func (ns *namespace) isAncestor(p1, p2 string) bool {
@@ -547,12 +549,12 @@ func (ns *namespace) snapshotNodes(tx *transaction, list []*struct {
 	})
 }
 
-func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
+func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error) {
 
 	if !ns.validatePath(src) ||
 		!ns.validatePath(dst) ||
 		ns.isAncestor(src, dst) {
-		return &ErrInvalidPath{}
+		return nil, &ErrInvalidPath{}
 	}
 
 	lockReqs := []*lockReq{
@@ -564,7 +566,7 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 
 	unlock, err := ns.acquireLocks(lockReqs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tx.addRB(unlock)
 
@@ -572,7 +574,7 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 
 		if req.path != src && req.path != dst {
 			if err := ns.checkAncestor(req.path); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -584,16 +586,18 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 	srcNode, ok := ns.entries[src]
 	if !ok {
 		ns.mu.RUnlock()
-		return &ErrNotFound{}
+		return nil, &ErrNotFound{}
 	}
 
 	_, ok = ns.entries[dst]
 	if ok {
 		ns.mu.RUnlock()
-		return &ErrObjectExist{}
+		return nil, &ErrObjectExist{}
 	}
 
 	ns.mu.RUnlock()
+
+	var nodes []*node
 
 	switch {
 
@@ -605,6 +609,10 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 			src string
 			dst string
 		}{{src: src, dst: dst}})
+
+		ns.mu.RLock()
+		nodes = append(nodes, ns.entries[src])
+		ns.mu.RUnlock()
 
 	case srcNode.dir:
 
@@ -618,12 +626,15 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 			dst string
 		}{}
 
+		ns.mu.RLock()
 		for _, path := range contents {
 			list = append(list, &struct {
 				src string
 				dst string
 			}{src: path, dst: dst + strings.TrimPrefix(path, src)})
+			nodes = append(nodes, ns.entries[path])
 		}
+		ns.mu.RUnlock()
 
 		ns.snapshotNodes(tx, list)
 
@@ -631,7 +642,7 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) error {
 
 	tx.addFunc(unlock)
 
-	return nil
+	return nodes, nil
 }
 
 func (ns *namespace) list(path string) ([]*node, error) {

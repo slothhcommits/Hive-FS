@@ -11,11 +11,9 @@ message Chunkserver {
 
     // master message types
     MESSAGE_TYPE_HEARTBEAT = 51;
-    MESSAGE_TYPE_UPDATE_VERSION_ACK = 52;
-    MESSAGE_TYPE_LEASE_GRANT_ACK = 53;
+    MESSAGE_TYPE_OP_ACK = 52;
 
     // client message types
-    
   }
 }
 
@@ -32,12 +30,8 @@ message Heartbeat {
   repeated ChunkInfo chunks = 3;
 }
 
-message UpdateVersionAck {
+message ChunkserverOpAck {
   bool success = 1;
-}
-
-message GrantLeaseAck {
-	bool success = 1;
 }
 
 // client messages

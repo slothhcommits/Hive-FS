@@ -13,6 +13,8 @@ message Master {
     MESSAGE_TYPE_HEARTBEAT_RES = 101;
     MESSAGE_TYPE_UPDATE_VERSION_REQ = 102;
     MESSAGE_TYPE_GRANT_LEASE_REQ = 103;
+    MESSAGE_TYPE_REVOKE_LEASE_REQ = 104;
+    MESSAGE_TYPE_COPY_CHUNK_REQ = 105;
 
     // client message types
     MESSAGE_TYPE_CREATE_FILE_ACK = 126;
@@ -32,9 +34,18 @@ message GrantLease {
   uint64 id = 1;
 }
 
+message RevokeLease {
+  repeated uint64 handles = 1;
+}
+
 message UpdateVersion {
   uint64 id = 1;
   uint32 version = 2;
+}
+
+message CopyChunk {
+  uint64 src_id = 1;
+  uint64 dst_id = 2;
 }
 
 // client messages
@@ -53,7 +64,7 @@ message SendChunkReplicas {
 // op log
 
 message Log {
-	repeated OperationRec recs = 1;
+  repeated OperationRec recs = 1;
 }
 
 message OperationRec {
