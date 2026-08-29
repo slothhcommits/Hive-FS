@@ -112,6 +112,8 @@ type chunkTable struct {
 	mu      sync.RWMutex
 	entries map[uint64]*chunk
 
+	stagedCreateMu sync.Mutex
+	stagedCreate   map[uint64]struct{}
 	// handle -> destination server -> time the replicate request was issued
 	repRequestsMu sync.Mutex
 	repRequests   map[uint64]map[string]time.Time
@@ -119,11 +121,12 @@ type chunkTable struct {
 
 func newChunkTable() *chunkTable {
 	return &chunkTable{
-		mu:      sync.RWMutex{},
-		entries: map[uint64]*chunk{},
-
-		repRequestsMu: sync.Mutex{},
-		repRequests:   make(map[uint64]map[string]time.Time),
+		mu:             sync.RWMutex{},
+		entries:        map[uint64]*chunk{},
+		stagedCreateMu: sync.Mutex{},
+		stagedCreate:   make(map[uint64]struct{}),
+		repRequestsMu:  sync.Mutex{},
+		repRequests:    make(map[uint64]map[string]time.Time),
 	}
 }
 
@@ -163,29 +166,69 @@ func (ct *chunkTable) remove(tx *transaction, handle uint64) {
 
 }
 
-// TODO: drop stale replicas
-func (ct *chunkTable) updateLocations(hb *messages.Chunkserver_Heartbeat) {
+func (ct *chunkTable) processHeartbeat(hb *messages.Chunkserver_Heartbeat) *messages.Master_HeartbeatRes {
+
+	res := &messages.Master_HeartbeatRes{}
 
 	ct.mu.RLock()
 	chunks := maps.Clone(ct.entries)
 	ct.mu.RUnlock()
+
 	for _, chunkInfo := range hb.Chunks {
 
 		if chunk, ok := chunks[chunkInfo.Id]; ok {
-			chunk.Lock()
-			chunk.locations[hb.Addr] = time.Now()
-			chunk.Unlock()
 
-			ct.repRequestsMu.Lock()
-			if reqs, ok := ct.repRequests[chunk.id]; ok {
-				delete(reqs, hb.Addr)
-				if len(reqs) == 0 {
-					delete(ct.repRequests, chunk.id)
+			chunk.Lock()
+
+			if chunkInfo.Version >= chunk.version {
+
+				chunk.locations[hb.Addr] = time.Now()
+				ct.repRequestsMu.Lock()
+				if reqs, ok := ct.repRequests[chunk.id]; ok {
+					delete(reqs, hb.Addr)
+					if len(reqs) == 0 {
+						delete(ct.repRequests, chunk.id)
+					}
+				}
+				ct.repRequestsMu.Unlock()
+
+				if chunkInfo.Version > chunk.version {
+					res.UpdateVersion = append(res.UpdateVersion, &messages.Master_UpdateVersion{
+						Id:      chunkInfo.Id,
+						Version: chunk.version,
+					})
+				}
+
+				if chunkInfo.ExtendLease {
+					if chunk.primary == hb.Addr {
+						chunk.leaseGrantTime = time.Now()
+						res.ExtendLease = append(res.ExtendLease, chunkInfo.Id)
+					} else {
+						res.RevokeLease = append(res.RevokeLease, chunkInfo.Id)
+					}
+				}
+			} else if chunkInfo.Version < chunk.version {
+				res.Delete = append(res.Delete, chunkInfo.Id)
+				delete(chunk.locations, hb.Addr)
+			}
+
+			for loc, t := range chunk.locations {
+				if !t.IsZero() && time.Since(t) > chunkSeverDeadline {
+					delete(chunk.locations, loc)
 				}
 			}
-			ct.repRequestsMu.Unlock()
+
+			chunk.Unlock()
+		} else {
+			ct.stagedCreateMu.Lock()
+			if _, ok := ct.stagedCreate[chunkInfo.Id]; !ok {
+				res.Delete = append(res.Delete, chunkInfo.Id)
+			}
+			ct.stagedCreateMu.Unlock()
 		}
 	}
+
+	return res
 }
 
 type chunkServer struct {
@@ -200,9 +243,21 @@ type chunkServerRegistry struct {
 
 func newChunkServerRegistry() *chunkServerRegistry {
 	return &chunkServerRegistry{
-		mu:             sync.RWMutex{},
-		entries:        make(map[string]*chunkServer),
+		mu:      sync.RWMutex{},
+		entries: make(map[string]*chunkServer),
 	}
+}
+
+func (csr *chunkServerRegistry) prune() {
+
+	csr.mu.Lock()
+	for addr, server := range csr.entries {
+		if time.Since(server.lastBeat) > chunkSeverDeadline {
+			delete(csr.entries, addr)
+		}
+	}
+	csr.mu.Unlock()
+
 }
 
 func (csr *chunkServerRegistry) update(hb *messages.Chunkserver_Heartbeat) {

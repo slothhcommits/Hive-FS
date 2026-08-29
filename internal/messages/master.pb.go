@@ -127,52 +127,19 @@ func (*Master) Descriptor() ([]byte, []int) {
 	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0}
 }
 
-type Master_Command struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Master_Command) Reset() {
-	*x = Master_Command{}
-	mi := &file_gfs_v1_master_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Master_Command) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Master_Command) ProtoMessage() {}
-
-func (x *Master_Command) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Master_Command.ProtoReflect.Descriptor instead.
-func (*Master_Command) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 0}
-}
-
 type Master_HeartbeatRes struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cmds          []*Master_Command      `protobuf:"bytes,2,rep,name=cmds,proto3" json:"cmds,omitempty"`
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Delete        []uint64                `protobuf:"varint,1,rep,packed,name=delete,proto3" json:"delete,omitempty"`
+	ExtendLease   []uint64                `protobuf:"varint,2,rep,packed,name=extend_lease,json=extendLease,proto3" json:"extend_lease,omitempty"`
+	RevokeLease   []uint64                `protobuf:"varint,3,rep,packed,name=revoke_lease,json=revokeLease,proto3" json:"revoke_lease,omitempty"`
+	UpdateVersion []*Master_UpdateVersion `protobuf:"bytes,4,rep,name=update_version,json=updateVersion,proto3" json:"update_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Master_HeartbeatRes) Reset() {
 	*x = Master_HeartbeatRes{}
-	mi := &file_gfs_v1_master_proto_msgTypes[2]
+	mi := &file_gfs_v1_master_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -184,7 +151,7 @@ func (x *Master_HeartbeatRes) String() string {
 func (*Master_HeartbeatRes) ProtoMessage() {}
 
 func (x *Master_HeartbeatRes) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[2]
+	mi := &file_gfs_v1_master_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -197,12 +164,33 @@ func (x *Master_HeartbeatRes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_HeartbeatRes.ProtoReflect.Descriptor instead.
 func (*Master_HeartbeatRes) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 1}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 0}
 }
 
-func (x *Master_HeartbeatRes) GetCmds() []*Master_Command {
+func (x *Master_HeartbeatRes) GetDelete() []uint64 {
 	if x != nil {
-		return x.Cmds
+		return x.Delete
+	}
+	return nil
+}
+
+func (x *Master_HeartbeatRes) GetExtendLease() []uint64 {
+	if x != nil {
+		return x.ExtendLease
+	}
+	return nil
+}
+
+func (x *Master_HeartbeatRes) GetRevokeLease() []uint64 {
+	if x != nil {
+		return x.RevokeLease
+	}
+	return nil
+}
+
+func (x *Master_HeartbeatRes) GetUpdateVersion() []*Master_UpdateVersion {
+	if x != nil {
+		return x.UpdateVersion
 	}
 	return nil
 }
@@ -216,7 +204,7 @@ type Master_GrantLease struct {
 
 func (x *Master_GrantLease) Reset() {
 	*x = Master_GrantLease{}
-	mi := &file_gfs_v1_master_proto_msgTypes[3]
+	mi := &file_gfs_v1_master_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -228,7 +216,7 @@ func (x *Master_GrantLease) String() string {
 func (*Master_GrantLease) ProtoMessage() {}
 
 func (x *Master_GrantLease) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[3]
+	mi := &file_gfs_v1_master_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -241,7 +229,7 @@ func (x *Master_GrantLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_GrantLease.ProtoReflect.Descriptor instead.
 func (*Master_GrantLease) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 2}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 1}
 }
 
 func (x *Master_GrantLease) GetId() uint64 {
@@ -260,7 +248,7 @@ type Master_RevokeLease struct {
 
 func (x *Master_RevokeLease) Reset() {
 	*x = Master_RevokeLease{}
-	mi := &file_gfs_v1_master_proto_msgTypes[4]
+	mi := &file_gfs_v1_master_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -272,7 +260,7 @@ func (x *Master_RevokeLease) String() string {
 func (*Master_RevokeLease) ProtoMessage() {}
 
 func (x *Master_RevokeLease) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[4]
+	mi := &file_gfs_v1_master_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -285,7 +273,7 @@ func (x *Master_RevokeLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_RevokeLease.ProtoReflect.Descriptor instead.
 func (*Master_RevokeLease) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 3}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 2}
 }
 
 func (x *Master_RevokeLease) GetHandles() []uint64 {
@@ -305,7 +293,7 @@ type Master_UpdateVersion struct {
 
 func (x *Master_UpdateVersion) Reset() {
 	*x = Master_UpdateVersion{}
-	mi := &file_gfs_v1_master_proto_msgTypes[5]
+	mi := &file_gfs_v1_master_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -317,7 +305,7 @@ func (x *Master_UpdateVersion) String() string {
 func (*Master_UpdateVersion) ProtoMessage() {}
 
 func (x *Master_UpdateVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[5]
+	mi := &file_gfs_v1_master_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -330,7 +318,7 @@ func (x *Master_UpdateVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_UpdateVersion.ProtoReflect.Descriptor instead.
 func (*Master_UpdateVersion) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 4}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 3}
 }
 
 func (x *Master_UpdateVersion) GetId() uint64 {
@@ -357,7 +345,7 @@ type Master_LocalCopy struct {
 
 func (x *Master_LocalCopy) Reset() {
 	*x = Master_LocalCopy{}
-	mi := &file_gfs_v1_master_proto_msgTypes[6]
+	mi := &file_gfs_v1_master_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -369,7 +357,7 @@ func (x *Master_LocalCopy) String() string {
 func (*Master_LocalCopy) ProtoMessage() {}
 
 func (x *Master_LocalCopy) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[6]
+	mi := &file_gfs_v1_master_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -382,7 +370,7 @@ func (x *Master_LocalCopy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_LocalCopy.ProtoReflect.Descriptor instead.
 func (*Master_LocalCopy) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 5}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 4}
 }
 
 func (x *Master_LocalCopy) GetSrcId() uint64 {
@@ -410,7 +398,7 @@ type Master_Replicate struct {
 
 func (x *Master_Replicate) Reset() {
 	*x = Master_Replicate{}
-	mi := &file_gfs_v1_master_proto_msgTypes[7]
+	mi := &file_gfs_v1_master_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -422,7 +410,7 @@ func (x *Master_Replicate) String() string {
 func (*Master_Replicate) ProtoMessage() {}
 
 func (x *Master_Replicate) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[7]
+	mi := &file_gfs_v1_master_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -435,7 +423,7 @@ func (x *Master_Replicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_Replicate.ProtoReflect.Descriptor instead.
 func (*Master_Replicate) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 6}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 5}
 }
 
 func (x *Master_Replicate) GetHandle() uint64 {
@@ -468,7 +456,7 @@ type Master_DeleteChunk struct {
 
 func (x *Master_DeleteChunk) Reset() {
 	*x = Master_DeleteChunk{}
-	mi := &file_gfs_v1_master_proto_msgTypes[8]
+	mi := &file_gfs_v1_master_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +468,7 @@ func (x *Master_DeleteChunk) String() string {
 func (*Master_DeleteChunk) ProtoMessage() {}
 
 func (x *Master_DeleteChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[8]
+	mi := &file_gfs_v1_master_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +481,7 @@ func (x *Master_DeleteChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_DeleteChunk.ProtoReflect.Descriptor instead.
 func (*Master_DeleteChunk) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 7}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 6}
 }
 
 func (x *Master_DeleteChunk) GetHandle() uint64 {
@@ -516,7 +504,7 @@ type Master_SendChunkReplicas struct {
 
 func (x *Master_SendChunkReplicas) Reset() {
 	*x = Master_SendChunkReplicas{}
-	mi := &file_gfs_v1_master_proto_msgTypes[9]
+	mi := &file_gfs_v1_master_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -528,7 +516,7 @@ func (x *Master_SendChunkReplicas) String() string {
 func (*Master_SendChunkReplicas) ProtoMessage() {}
 
 func (x *Master_SendChunkReplicas) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[9]
+	mi := &file_gfs_v1_master_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -541,7 +529,7 @@ func (x *Master_SendChunkReplicas) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_SendChunkReplicas.ProtoReflect.Descriptor instead.
 func (*Master_SendChunkReplicas) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 8}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 7}
 }
 
 func (x *Master_SendChunkReplicas) GetChunkId() uint64 {
@@ -588,7 +576,7 @@ type Master_Log struct {
 
 func (x *Master_Log) Reset() {
 	*x = Master_Log{}
-	mi := &file_gfs_v1_master_proto_msgTypes[10]
+	mi := &file_gfs_v1_master_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -600,7 +588,7 @@ func (x *Master_Log) String() string {
 func (*Master_Log) ProtoMessage() {}
 
 func (x *Master_Log) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[10]
+	mi := &file_gfs_v1_master_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -613,7 +601,7 @@ func (x *Master_Log) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_Log.ProtoReflect.Descriptor instead.
 func (*Master_Log) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 9}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 8}
 }
 
 func (x *Master_Log) GetRecs() []*Master_OperationRec {
@@ -633,7 +621,7 @@ type Master_OperationRec struct {
 
 func (x *Master_OperationRec) Reset() {
 	*x = Master_OperationRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[11]
+	mi := &file_gfs_v1_master_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -645,7 +633,7 @@ func (x *Master_OperationRec) String() string {
 func (*Master_OperationRec) ProtoMessage() {}
 
 func (x *Master_OperationRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[11]
+	mi := &file_gfs_v1_master_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -658,7 +646,7 @@ func (x *Master_OperationRec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_OperationRec.ProtoReflect.Descriptor instead.
 func (*Master_OperationRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 10}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 9}
 }
 
 func (x *Master_OperationRec) GetOpType() uint32 {
@@ -686,7 +674,7 @@ type Master_NamespaceRec struct {
 
 func (x *Master_NamespaceRec) Reset() {
 	*x = Master_NamespaceRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[12]
+	mi := &file_gfs_v1_master_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -698,7 +686,7 @@ func (x *Master_NamespaceRec) String() string {
 func (*Master_NamespaceRec) ProtoMessage() {}
 
 func (x *Master_NamespaceRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[12]
+	mi := &file_gfs_v1_master_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -711,7 +699,7 @@ func (x *Master_NamespaceRec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_NamespaceRec.ProtoReflect.Descriptor instead.
 func (*Master_NamespaceRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 11}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 10}
 }
 
 func (x *Master_NamespaceRec) GetPath() string {
@@ -747,7 +735,7 @@ type Master_DeletedRec struct {
 
 func (x *Master_DeletedRec) Reset() {
 	*x = Master_DeletedRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[13]
+	mi := &file_gfs_v1_master_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +747,7 @@ func (x *Master_DeletedRec) String() string {
 func (*Master_DeletedRec) ProtoMessage() {}
 
 func (x *Master_DeletedRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[13]
+	mi := &file_gfs_v1_master_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +760,7 @@ func (x *Master_DeletedRec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_DeletedRec.ProtoReflect.Descriptor instead.
 func (*Master_DeletedRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 12}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 11}
 }
 
 func (x *Master_DeletedRec) GetKey() string {
@@ -813,7 +801,7 @@ type Master_ChunktableRec struct {
 
 func (x *Master_ChunktableRec) Reset() {
 	*x = Master_ChunktableRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[14]
+	mi := &file_gfs_v1_master_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +813,7 @@ func (x *Master_ChunktableRec) String() string {
 func (*Master_ChunktableRec) ProtoMessage() {}
 
 func (x *Master_ChunktableRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[14]
+	mi := &file_gfs_v1_master_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +826,7 @@ func (x *Master_ChunktableRec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_ChunktableRec.ProtoReflect.Descriptor instead.
 func (*Master_ChunktableRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 13}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 12}
 }
 
 func (x *Master_ChunktableRec) GetHandle() uint64 {
@@ -864,7 +852,7 @@ type Master_NamespaceRec_Metadata struct {
 
 func (x *Master_NamespaceRec_Metadata) Reset() {
 	*x = Master_NamespaceRec_Metadata{}
-	mi := &file_gfs_v1_master_proto_msgTypes[15]
+	mi := &file_gfs_v1_master_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -876,7 +864,7 @@ func (x *Master_NamespaceRec_Metadata) String() string {
 func (*Master_NamespaceRec_Metadata) ProtoMessage() {}
 
 func (x *Master_NamespaceRec_Metadata) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[15]
+	mi := &file_gfs_v1_master_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -889,7 +877,7 @@ func (x *Master_NamespaceRec_Metadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_NamespaceRec_Metadata.ProtoReflect.Descriptor instead.
 func (*Master_NamespaceRec_Metadata) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 11, 0}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 10, 0}
 }
 
 func (x *Master_NamespaceRec_Metadata) GetChunkHandles() []uint64 {
@@ -910,7 +898,7 @@ type Master_ChunktableRec_Chunk struct {
 
 func (x *Master_ChunktableRec_Chunk) Reset() {
 	*x = Master_ChunktableRec_Chunk{}
-	mi := &file_gfs_v1_master_proto_msgTypes[16]
+	mi := &file_gfs_v1_master_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +910,7 @@ func (x *Master_ChunktableRec_Chunk) String() string {
 func (*Master_ChunktableRec_Chunk) ProtoMessage() {}
 
 func (x *Master_ChunktableRec_Chunk) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[16]
+	mi := &file_gfs_v1_master_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +923,7 @@ func (x *Master_ChunktableRec_Chunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Master_ChunktableRec_Chunk.ProtoReflect.Descriptor instead.
 func (*Master_ChunktableRec_Chunk) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 13, 0}
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 12, 0}
 }
 
 func (x *Master_ChunktableRec_Chunk) GetRef() uint32 {
@@ -963,11 +951,13 @@ var File_gfs_v1_master_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_master_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\xb9\v\n" +
-	"\x06Master\x1a\t\n" +
-	"\aCommand\x1a:\n" +
-	"\fHeartbeatRes\x12*\n" +
-	"\x04cmds\x18\x02 \x03(\v2\x16.gfs.v1.Master.CommandR\x04cmds\x1a\x1c\n" +
+	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\xa6\f\n" +
+	"\x06Master\x1a\xb1\x01\n" +
+	"\fHeartbeatRes\x12\x16\n" +
+	"\x06delete\x18\x01 \x03(\x04R\x06delete\x12!\n" +
+	"\fextend_lease\x18\x02 \x03(\x04R\vextendLease\x12!\n" +
+	"\frevoke_lease\x18\x03 \x03(\x04R\vrevokeLease\x12C\n" +
+	"\x0eupdate_version\x18\x04 \x03(\v2\x1c.gfs.v1.Master.UpdateVersionR\rupdateVersion\x1a\x1c\n" +
 	"\n" +
 	"GrantLease\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x1a'\n" +
@@ -1041,32 +1031,31 @@ func file_gfs_v1_master_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_master_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_master_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_gfs_v1_master_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_gfs_v1_master_proto_goTypes = []any{
 	(Master_MessageType)(0),              // 0: gfs.v1.Master.MessageType
 	(*Master)(nil),                       // 1: gfs.v1.Master
-	(*Master_Command)(nil),               // 2: gfs.v1.Master.Command
-	(*Master_HeartbeatRes)(nil),          // 3: gfs.v1.Master.HeartbeatRes
-	(*Master_GrantLease)(nil),            // 4: gfs.v1.Master.GrantLease
-	(*Master_RevokeLease)(nil),           // 5: gfs.v1.Master.RevokeLease
-	(*Master_UpdateVersion)(nil),         // 6: gfs.v1.Master.UpdateVersion
-	(*Master_LocalCopy)(nil),             // 7: gfs.v1.Master.LocalCopy
-	(*Master_Replicate)(nil),             // 8: gfs.v1.Master.Replicate
-	(*Master_DeleteChunk)(nil),           // 9: gfs.v1.Master.DeleteChunk
-	(*Master_SendChunkReplicas)(nil),     // 10: gfs.v1.Master.SendChunkReplicas
-	(*Master_Log)(nil),                   // 11: gfs.v1.Master.Log
-	(*Master_OperationRec)(nil),          // 12: gfs.v1.Master.OperationRec
-	(*Master_NamespaceRec)(nil),          // 13: gfs.v1.Master.NamespaceRec
-	(*Master_DeletedRec)(nil),            // 14: gfs.v1.Master.DeletedRec
-	(*Master_ChunktableRec)(nil),         // 15: gfs.v1.Master.ChunktableRec
-	(*Master_NamespaceRec_Metadata)(nil), // 16: gfs.v1.Master.NamespaceRec.Metadata
-	(*Master_ChunktableRec_Chunk)(nil),   // 17: gfs.v1.Master.ChunktableRec.Chunk
+	(*Master_HeartbeatRes)(nil),          // 2: gfs.v1.Master.HeartbeatRes
+	(*Master_GrantLease)(nil),            // 3: gfs.v1.Master.GrantLease
+	(*Master_RevokeLease)(nil),           // 4: gfs.v1.Master.RevokeLease
+	(*Master_UpdateVersion)(nil),         // 5: gfs.v1.Master.UpdateVersion
+	(*Master_LocalCopy)(nil),             // 6: gfs.v1.Master.LocalCopy
+	(*Master_Replicate)(nil),             // 7: gfs.v1.Master.Replicate
+	(*Master_DeleteChunk)(nil),           // 8: gfs.v1.Master.DeleteChunk
+	(*Master_SendChunkReplicas)(nil),     // 9: gfs.v1.Master.SendChunkReplicas
+	(*Master_Log)(nil),                   // 10: gfs.v1.Master.Log
+	(*Master_OperationRec)(nil),          // 11: gfs.v1.Master.OperationRec
+	(*Master_NamespaceRec)(nil),          // 12: gfs.v1.Master.NamespaceRec
+	(*Master_DeletedRec)(nil),            // 13: gfs.v1.Master.DeletedRec
+	(*Master_ChunktableRec)(nil),         // 14: gfs.v1.Master.ChunktableRec
+	(*Master_NamespaceRec_Metadata)(nil), // 15: gfs.v1.Master.NamespaceRec.Metadata
+	(*Master_ChunktableRec_Chunk)(nil),   // 16: gfs.v1.Master.ChunktableRec.Chunk
 }
 var file_gfs_v1_master_proto_depIdxs = []int32{
-	2,  // 0: gfs.v1.Master.HeartbeatRes.cmds:type_name -> gfs.v1.Master.Command
-	12, // 1: gfs.v1.Master.Log.recs:type_name -> gfs.v1.Master.OperationRec
-	16, // 2: gfs.v1.Master.NamespaceRec.metadata:type_name -> gfs.v1.Master.NamespaceRec.Metadata
-	17, // 3: gfs.v1.Master.ChunktableRec.chunk:type_name -> gfs.v1.Master.ChunktableRec.Chunk
+	5,  // 0: gfs.v1.Master.HeartbeatRes.update_version:type_name -> gfs.v1.Master.UpdateVersion
+	11, // 1: gfs.v1.Master.Log.recs:type_name -> gfs.v1.Master.OperationRec
+	15, // 2: gfs.v1.Master.NamespaceRec.metadata:type_name -> gfs.v1.Master.NamespaceRec.Metadata
+	16, // 3: gfs.v1.Master.ChunktableRec.chunk:type_name -> gfs.v1.Master.ChunktableRec.Chunk
 	4,  // [4:4] is the sub-list for method output_type
 	4,  // [4:4] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
@@ -1085,7 +1074,7 @@ func file_gfs_v1_master_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_master_proto_rawDesc), len(file_gfs_v1_master_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

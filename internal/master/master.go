@@ -93,13 +93,14 @@ func (m *master) requestRouter(req hive.Request) {
 		req.Respond(m.writeHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_SNAPSHOT_REQ):
+		req.Respond(m.snapshotHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_DELETE):
 		req.Respond(m.deleteHandler(req.Message()))
+
 	// chunkserver
 	case uint8(messages.Chunkserver_MESSAGE_TYPE_HEARTBEAT):
-		req.Respond(m.snapshotHandler(req.Message()))
-
+		req.Respond(m.heartbeatHandler(req.Message()))
 	}
 
 }
@@ -166,6 +167,15 @@ func (m *master) addNewChunk(path string, file *node) error {
 
 	chunk := newChunk()
 
+	m.chunkTable.stagedCreateMu.Lock()
+	m.chunkTable.stagedCreate[chunk.id] = struct{}{}
+	m.chunkTable.stagedCreateMu.Unlock()
+	defer func() {
+		m.chunkTable.stagedCreateMu.Lock()
+		delete(m.chunkTable.stagedCreate, chunk.id)
+		m.chunkTable.stagedCreateMu.Unlock()
+	}()
+
 	servers, err := m.csr.getServers(chunk.repFactor, []string{})
 	if err != nil {
 		return err
@@ -188,6 +198,68 @@ func (m *master) addNewChunk(path string, file *node) error {
 	tx.commit()
 
 	return nil
+}
+
+func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
+
+	newChunk := newChunk()
+	newChunk.version = oldChunk.version
+	newChunk.ref = 1
+	newChunk.repFactor = oldChunk.repFactor
+
+	req := &messages.Master_LocalCopy{
+		SrcId: oldChunk.id,
+		DstId: newChunk.id,
+	}
+
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		panic(err)
+	}
+
+	msg := &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Type: uint8(messages.Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK),
+			Size: uint32(len(payload)),
+		},
+	}
+
+	m.chunkTable.stagedCreateMu.Lock()
+	m.chunkTable.stagedCreate[newChunk.id] = struct{}{}
+	m.chunkTable.stagedCreateMu.Unlock()
+
+	wg := sync.WaitGroup{}
+
+	for _, loc := range oldChunk.getLocations(nil) {
+
+		wg.Add(1)
+		go func(loc string) {
+			defer wg.Done()
+			ack, err := m.sendRequest(loc, msg, copyAckTimeout)
+			if err == nil {
+
+				res := &messages.Ack{}
+				err := proto.Unmarshal(ack.Payload, res)
+
+				if err == nil && res.Success {
+					newChunk.Lock()
+					newChunk.locations[loc] = time.Now()
+					newChunk.Unlock()
+				}
+			}
+		}(loc)
+	}
+
+	wg.Wait()
+
+	if len(newChunk.locations) == 0 {
+		m.chunkTable.stagedCreateMu.Lock()
+		delete(m.chunkTable.stagedCreate, newChunk.id)
+		m.chunkTable.stagedCreateMu.Unlock()
+		return nil, ErrUnavailable
+	}
+	return newChunk, nil
 }
 
 func (m *master) setWriteResponse(chunk *chunk) *hive.Message {
@@ -269,6 +341,13 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		if err != nil {
 			return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
+
+		defer func() {
+			m.chunkTable.stagedCreateMu.Lock()
+			delete(m.chunkTable.stagedCreate, newChunk.id)
+			m.chunkTable.stagedCreateMu.Unlock()
+		}()
+
 		if err := m.grantLease(newChunk); err != nil {
 			return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
@@ -296,61 +375,6 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 	}
 
 	return m.setWriteResponse(chunk)
-}
-
-func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
-
-	newChunk := newChunk()
-	newChunk.version = oldChunk.version
-	newChunk.ref = 1
-	newChunk.repFactor = oldChunk.repFactor
-
-	req := &messages.Master_LocalCopy{
-		SrcId: oldChunk.id,
-		DstId: newChunk.id,
-	}
-
-	payload, err := proto.Marshal(req)
-	if err != nil {
-		panic(err)
-	}
-
-	msg := &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK),
-			Size: uint32(len(payload)),
-		},
-	}
-
-	wg := sync.WaitGroup{}
-
-	for _, loc := range oldChunk.getLocations(nil) {
-
-		wg.Add(1)
-		go func(loc string) {
-			defer wg.Done()
-			ack, err := m.sendRequest(loc, msg, copyAckTimeout)
-			if err == nil {
-
-				res := &messages.Ack{}
-				err := proto.Unmarshal(ack.Payload, res)
-
-				if err == nil && res.Success {
-					newChunk.Lock()
-					newChunk.locations[loc] = time.Now()
-					newChunk.Unlock()
-				}
-			}
-		}(loc)
-	}
-
-	wg.Wait()
-
-	if len(newChunk.locations) == 0 {
-		return nil, ErrUnavailable
-	}
-	return newChunk, nil
 }
 
 func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
@@ -625,6 +649,31 @@ func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
 		Metadata: hive.Metadata{
 			Type: uint8(messages.MessageType_ACK),
 			Size: uint32(len(payload)),
+		},
+	}
+}
+
+func (m *master) heartbeatHandler(msg *hive.Message) *hive.Message {
+
+	hb := &messages.Chunkserver_Heartbeat{}
+	err := proto.Unmarshal(msg.Payload, hb)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
+
+	m.csr.update(hb)
+	res := m.chunkTable.processHeartbeat(hb)
+
+	payload, err := proto.Marshal(res)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.Master_MESSAGE_TYPE_HEARTBEAT_RES),
 		},
 	}
 }
@@ -1012,5 +1061,6 @@ func makeErrMessage(code uint8, err error) *hive.Message {
 var ErrRequestTimeout = errors.New("request timedout")
 var ErrUnavailable = errors.New("unavailable")
 var ErrOpFailed = errors.New("operation failed")
-var ErrProtoMarshal = errors.New("proto marshal error")
+
+// var ErrProtoMarshal = errors.New("proto marshal error")
 var ErrProtoUnmarshal = errors.New("proto unmarshal error")

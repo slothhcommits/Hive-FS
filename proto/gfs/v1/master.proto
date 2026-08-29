@@ -24,10 +24,11 @@ message Master {
 
   // chunkserver messages
 
-  message Command {}
-
   message HeartbeatRes {
-    repeated Command cmds = 2;
+    repeated uint64 delete = 1;
+    repeated uint64 extend_lease = 2;
+    repeated uint64 revoke_lease = 3;
+    repeated UpdateVersion update_version = 4;
   }
 
   message GrantLease {
