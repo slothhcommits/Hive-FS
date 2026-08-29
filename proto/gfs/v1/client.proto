@@ -10,22 +10,32 @@ message Client {
     MESSAGE_TYPE_UNSPECIFIED = 0;
 
     // master message types
-    MESSAGE_TYPE_CREATE_REQ = 1;
-    MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ = 2;
-    MESSAGE_TYPE_SNAPSHOT_REQ = 3;
-    MESSAGE_TYPE_DELETE = 5;
+    MESSAGE_TYPE_READ_FILE = 1;
+    MESSAGE_TYPE_CREATE_FILE = 2;
+    MESSAGE_TYPE_CHUNK_REPLICAS = 3;
+    MESSAGE_TYPE_SNAPSHOT = 5;
+    MESSAGE_TYPE_MOVE = 6;
+    MESSAGE_TYPE_LIST = 7;
+    MESSAGE_TYPE_DELETE = 8;
 
     // chunkserver message types
   }
 
   // master messages
-  message Create {
+  message Read {
+    string path = 1;
+    uint32 idx = 2;
+    uint32 count = 3;
+  }
+
+  message CreateFile {
     string path = 1;
   }
 
   message GetChunkReplicas {
     string path = 1;
-    uint32 chunk_idx = 2;
+    bool last_chunk = 2;
+    uint32 chunk_idx = 3;
   }
 
   message Snapshot {
@@ -33,8 +43,16 @@ message Client {
     string dst = 2;
   }
 
+  message Move {
+    string src = 1;
+    string dst = 2;
+  }
+
+  message List {
+    string path = 1;
+  }
+
   message Delete {
     string path = 1;
   }
-  
 }

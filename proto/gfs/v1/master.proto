@@ -11,15 +11,17 @@ message Master {
 
     // chunkserver message types
     MESSAGE_TYPE_HEARTBEAT_RES = 101;
-    MESSAGE_TYPE_UPDATE_VERSION_REQ = 102;
-    MESSAGE_TYPE_GRANT_LEASE_REQ = 103;
-    MESSAGE_TYPE_REVOKE_LEASE_REQ = 104;
+    MESSAGE_TYPE_UPDATE_VERSION = 102;
+    MESSAGE_TYPE_TAKE_LEASE = 103;
+    MESSAGE_TYPE_REVOKE_LEASE = 104;
     MESSAGE_TYPE_LOCAL_COPY_CHUNK = 105;
     MESSAGE_TYPE_REPLICATE_CHUNK = 106;
     MESSAGE_TYPE_DELETE_CHUNK = 107;
 
     // client message types
-    MESSAGE_TYPE_SEND_CHUNK_REPLICAS = 127;
+    MESSAGE_TYPE_FILE = 126;
+    MESSAGE_TYPE_CHUNK_REPLICAS = 127;
+    MESSAGE_TYPE_SUBTREE = 128;
   }
 
   // chunkserver messages
@@ -61,12 +63,20 @@ message Master {
 
   // client messages
 
-  message SendChunkReplicas {
+  message File {
+    repeated Master.Chunk chunks = 1;
+  }
+
+  message Chunk {
     uint64 chunk_id = 1;
     uint32 version = 2;
     string primary = 3;
     int64 lease_expiry = 4;
     repeated string locations = 5;
+  }
+
+  message Subtree {
+    repeated string contents = 1;
   }
 
   // op log

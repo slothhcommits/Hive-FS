@@ -86,14 +86,23 @@ func (m *master) requestRouter(req hive.Request) {
 	switch req.Message().Type {
 
 	// client
-	case uint8(messages.Client_MESSAGE_TYPE_CREATE_REQ):
-		req.Respond(m.createHandler(req.Message()))
+	case uint8(messages.Client_MESSAGE_TYPE_READ_FILE):
+		req.Respond(m.readFileHandler(req.Message()))
 
-	case uint8(messages.Client_MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ):
+	case uint8(messages.Client_MESSAGE_TYPE_CREATE_FILE):
+		req.Respond(m.createFileHandler(req.Message()))
+
+	case uint8(messages.Client_MESSAGE_TYPE_CHUNK_REPLICAS):
 		req.Respond(m.writeHandler(req.Message()))
 
-	case uint8(messages.Client_MESSAGE_TYPE_SNAPSHOT_REQ):
+	case uint8(messages.Client_MESSAGE_TYPE_SNAPSHOT):
 		req.Respond(m.snapshotHandler(req.Message()))
+
+	case uint8(messages.Client_MESSAGE_TYPE_MOVE):
+		req.Respond(m.moveHandler(req.Message()))
+
+	case uint8(messages.Client_MESSAGE_TYPE_LIST):
+		req.Respond(m.listHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_DELETE):
 		req.Respond(m.deleteHandler(req.Message()))
@@ -129,9 +138,67 @@ func (m *master) sendRequest(addr string, msg *hive.Message, timeout time.Durati
 	return res, nil
 }
 
-func (m *master) createHandler(msg *hive.Message) *hive.Message {
+func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
 
-	req := &messages.Client_Create{}
+	req := &messages.Client_Read{}
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
+
+	tx := &transaction{}
+
+	file, err := m.namespace.lookup(tx, req.Path)
+	defer tx.commit()
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+	}
+	file.RLock()
+	defer file.RUnlock()
+
+	if req.Idx >= uint32(len(file.chunkHandles)) {
+		return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), fmt.Errorf("index out of bounds"))
+	}
+
+	chunks := []*chunk{}
+
+	m.chunkTable.mu.RLock()
+	for _, handle := range file.chunkHandles[int(req.Idx):min(int(req.Idx)+int(req.Count), len(file.chunkHandles))] {
+		chunk, ok := m.chunkTable.entries[handle]
+		if ok {
+			chunks = append(chunks, chunk)
+		}
+	}
+	m.chunkTable.mu.RUnlock()
+
+	res := &messages.Master_File{}
+	for _, chunk := range chunks {
+		chunk.Lock()
+		res.Chunks = append(res.Chunks, &messages.Master_Chunk{
+			ChunkId:   chunk.id,
+			Version:   chunk.version,
+			Locations: chunk.getLocations(nil),
+		})
+		chunk.Unlock()
+	}
+
+	payload, err := proto.Marshal(res)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Type: uint8(messages.Master_MESSAGE_TYPE_FILE),
+			Size: uint32(len(payload)),
+		},
+	}
+}
+
+func (m *master) createFileHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Client_CreateFile{}
 	if err := proto.Unmarshal(msg.Payload, req); err != nil {
 		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
@@ -264,7 +331,7 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 
 func (m *master) setWriteResponse(chunk *chunk) *hive.Message {
 
-	sendReplicas := &messages.Master_SendChunkReplicas{
+	sendReplicas := &messages.Master_Chunk{
 		ChunkId:     chunk.id,
 		Version:     chunk.version,
 		Primary:     chunk.primary,
@@ -280,7 +347,7 @@ func (m *master) setWriteResponse(chunk *chunk) *hive.Message {
 	res := &hive.Message{
 		Payload: payload,
 		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_SEND_CHUNK_REPLICAS),
+			Type: uint8(messages.Master_MESSAGE_TYPE_CHUNK_REPLICAS),
 			Size: uint32(len(payload)),
 		},
 	}
@@ -304,6 +371,14 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 	defer unlockNamespace.commit()
 	file.Lock()
 	defer file.Unlock()
+
+	if req.LastChunk {
+		if len(file.chunkHandles) == 0 {
+			req.ChunkIdx = 0
+		} else {
+			req.ChunkIdx = uint32(len(file.chunkHandles) - 1)
+		}
+	}
 
 	// sparse write, length exceeded
 	if uint32(len(file.chunkHandles)) < req.ChunkIdx {
@@ -498,7 +573,7 @@ func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]st
 
 		msg := &hive.Message{
 			Metadata: hive.Metadata{
-				Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION_REQ),
+				Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION),
 				Size: uint32(len(payload)),
 			},
 			Payload: payload,
@@ -555,7 +630,7 @@ func (m *master) grantLease(c *chunk) error {
 	msg := &hive.Message{
 		Payload: payload,
 		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_GRANT_LEASE_REQ),
+			Type: uint8(messages.Master_MESSAGE_TYPE_TAKE_LEASE),
 			Size: uint32(len(payload)),
 		},
 	}
@@ -607,7 +682,7 @@ func (m *master) revokeLease(primary string, handles []uint64) {
 	msg := &hive.Message{
 		Payload: payload,
 		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_REVOKE_LEASE_REQ),
+			Type: uint8(messages.Master_MESSAGE_TYPE_REVOKE_LEASE),
 			Size: uint32(len(payload)),
 		},
 	}
@@ -615,6 +690,74 @@ func (m *master) revokeLease(primary string, handles []uint64) {
 	_, err = m.sendRequest(primary, msg, leaseDeadline)
 	if err != nil && !errors.Is(err, ErrRequestTimeout) {
 		time.Sleep(leaseDeadline)
+	}
+}
+
+func (m *master) moveHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Client_Move{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
+
+	tx := &transaction{}
+	err = m.namespace.move(tx, req.Src, req.Dst)
+	if err != nil {
+		tx.rollback()
+		return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+	}
+
+	tx.commit()
+
+	res := &messages.Ack{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(res)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.MessageType_ACK),
+		},
+	}
+}
+
+func (m *master) listHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Client_List{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+	}
+
+	contents, err := m.namespace.list(req.Path)
+	if err != nil {
+		return makeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+	}
+
+	res := &messages.Master_Subtree{
+		Contents: contents,
+	}
+
+	payload, err := proto.Marshal(res)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.Master_MESSAGE_TYPE_SUBTREE),
+		},
 	}
 }
 

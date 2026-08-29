@@ -655,7 +655,7 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error)
 	return nodes, nil
 }
 
-func (ns *namespace) list(path string) ([]*node, error) {
+func (ns *namespace) list(path string) ([]string, error) {
 
 	lockReqs := []*lockReq{{path: path, read: true}}
 	lockReqs = ns.expand(lockReqs)
@@ -672,19 +672,19 @@ func (ns *namespace) list(path string) ([]*node, error) {
 		}
 	}
 
-	var nodes []*node
+	var contents []string
 
 	paths := ns.prefixScan(path)
 	ns.mu.RLock()
 	for _, p := range paths {
-		f := ns.entries[p]
-		if !f.dir {
-			nodes = append(nodes, f)
+		f, ok := ns.entries[p]
+		if ok && !f.dir {
+			contents = append(contents, p)
 		}
 	}
 	ns.mu.RUnlock()
 
-	return nodes, nil
+	return contents, nil
 }
 
 func (ns *namespace) delete(tx *transaction, path string) error {
