@@ -61,11 +61,25 @@ func newMaster(opts *MasterOpts) *master {
 func (m *master) Boot(ctx context.Context) error {
 
 	// replay last checkpoint
-	if err := m.transport.ListenAndAccept(m.listenAddr); err != nil {
-		return err
+	m.buildState()
+
+	go m.listenCheckpointSig()
+
+	if !m.isShadow {
+		go m.garbageCollector()
+		go m.reReplicate()
 	}
-	m.transport.Close()
-	return nil
+
+	go m.handleRequests(ctx)
+
+	// ListenAndAccept blocks until the transport is shut down
+	go func() {
+		<-ctx.Done()
+		close(m.closeCh)
+		m.transport.Close()
+	}()
+
+	return m.transport.ListenAndAccept(m.listenAddr)
 }
 
 func (m *master) handleRequests(ctx context.Context) {
@@ -73,7 +87,11 @@ func (m *master) handleRequests(ctx context.Context) {
 	reqCh := m.transport.Consume()
 	for {
 		select {
-		case <-reqCh:
+		case req, ok := <-reqCh:
+			if !ok {
+				return
+			}
+			go m.requestRouter(req)
 		case <-ctx.Done():
 			return
 		}
@@ -948,21 +966,13 @@ func (m *master) garbageCollector() {
 
 		for _, chunk := range chunks {
 
-			if opsLeft == 0 {
+			if opsLeft <= 0 {
 				break
 			}
 
 			chunk.Lock()
 			if chunk.ref == 0 {
-				tx.addOp(&operation{
-					t:    DELETE_CHUNK,
-					args: []string{strconv.FormatUint(chunk.id, 10)},
-				})
-				tx.addFunc(func() {
-					m.chunkTable.mu.Lock()
-					delete(m.chunkTable.entries, chunk.id)
-					m.chunkTable.mu.Unlock()
-				})
+				m.chunkTable.remove(tx, chunk.id)
 				locks = append(locks, &chunk.Mutex)
 				opsLeft--
 			} else {
@@ -985,6 +995,8 @@ func (m *master) garbageCollector() {
 func (m *master) reReplicate() {
 
 	for {
+
+		m.csr.prune()
 
 		m.chunkTable.repRequestsMu.Lock()
 		for handle, reqs := range m.chunkTable.repRequests {

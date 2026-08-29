@@ -234,6 +234,8 @@ func (s *persistentState) buildState() {
 	var logs []uint64
 	var checkpoint uint64 = 0
 
+	var junk []string
+
 	currLogHandle := logHandle.Load()
 	for _, file := range files {
 
@@ -246,7 +248,12 @@ func (s *persistentState) buildState() {
 		if name, ok := strings.CutSuffix(file.Name(), ".cp"); ok {
 			if n, err := strconv.ParseUint(name, 10, 64); err == nil {
 				if checkpoint == 0 || checkpoint < n {
+					if checkpoint != 0 {
+						junk = append(junk, strconv.FormatUint(checkpoint, 10)+".cp")
+					}
 					checkpoint = n
+				} else {
+					junk = append(junk, strconv.FormatUint(n, 10)+".cp")
 				}
 			}
 		}
@@ -273,6 +280,8 @@ func (s *persistentState) buildState() {
 			if logs[i] >= checkpoint {
 				trimIdx = i
 				break
+			} else {
+				junk = append(junk, strconv.FormatUint(logs[i], 10)+".log")
 			}
 		}
 		logs = logs[trimIdx:]
@@ -294,6 +303,10 @@ func (s *persistentState) buildState() {
 				panic(err)
 			}
 		}
+	}
+
+	for _, name := range junk {
+		os.Remove(filepath.Join(hivePath, name))
 	}
 }
 
