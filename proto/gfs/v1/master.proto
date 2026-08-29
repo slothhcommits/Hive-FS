@@ -14,79 +14,94 @@ message Master {
     MESSAGE_TYPE_UPDATE_VERSION_REQ = 102;
     MESSAGE_TYPE_GRANT_LEASE_REQ = 103;
     MESSAGE_TYPE_REVOKE_LEASE_REQ = 104;
-    MESSAGE_TYPE_COPY_CHUNK_REQ = 105;
+    MESSAGE_TYPE_LOCAL_COPY_CHUNK = 105;
+    MESSAGE_TYPE_REPLICATE_CHUNK = 106;
+    MESSAGE_TYPE_DELETE_CHUNK = 107;
 
     // client message types
-    MESSAGE_TYPE_CREATE_FILE_ACK = 126;
     MESSAGE_TYPE_SEND_CHUNK_REPLICAS = 127;
   }
-}
 
-// chunkserver messages
+  // chunkserver messages
 
-message Command {}
+  message Command {}
 
-message HeartbeatRes {
-  repeated Command cmds = 2;
-}
-
-message GrantLease {
-  uint64 id = 1;
-}
-
-message RevokeLease {
-  repeated uint64 handles = 1;
-}
-
-message UpdateVersion {
-  uint64 id = 1;
-  uint32 version = 2;
-}
-
-message CopyChunk {
-  uint64 src_id = 1;
-  uint64 dst_id = 2;
-}
-
-// client messages
-message CreateFileAck {
-  bool success = 1;
-}
-
-message SendChunkReplicas {
-  uint64 chunk_id = 1;
-  uint32 version = 2;
-  string primary = 3;
-  int64 lease_expiry = 4;
-  repeated string locations = 5;
-}
-
-// op log
-
-message Log {
-  repeated OperationRec recs = 1;
-}
-
-message OperationRec {
-  uint32 op_type = 1;
-  repeated string args = 2;
-}
-
-message NamespaceRec {
-  string path = 1;
-  bool dir = 2;
-  Metadata metadata = 3;
-  message Metadata {
-    repeated uint64 chunk_handles = 1;
+  message HeartbeatRes {
+    repeated Command cmds = 2;
   }
-}
 
-message ChunktableRec {
-  uint64 handle = 1;
-  Chunk chunk = 2;
-  message Chunk {
-    uint32 ref = 1;
+  message GrantLease {
+    uint64 id = 1;
+  }
+
+  message RevokeLease {
+    repeated uint64 handles = 1;
+  }
+
+  message UpdateVersion {
+    uint64 id = 1;
     uint32 version = 2;
-    uint32 rep_factor = 3;
+  }
+
+  message LocalCopy {
+    uint64 src_id = 1;
+    uint64 dst_id = 2;
+  }
+
+  message Replicate {
+    uint64 handle = 1;
+    uint32 version = 2;
+    string src = 3;
+  }
+
+  message DeleteChunk {
+    uint64 handle = 1;
+  }
+
+  // client messages
+
+  message SendChunkReplicas {
+    uint64 chunk_id = 1;
+    uint32 version = 2;
+    string primary = 3;
+    int64 lease_expiry = 4;
+    repeated string locations = 5;
+  }
+
+  // op log
+
+  message Log {
+    repeated OperationRec recs = 1;
+  }
+
+  message OperationRec {
+    uint32 op_type = 1;
+    repeated string args = 2;
+  }
+
+  message NamespaceRec {
+    string path = 1;
+    bool dir = 2;
+    Metadata metadata = 3;
+    message Metadata {
+      repeated uint64 chunk_handles = 1;
+    }
+  }
+
+  message DeletedRec {
+    string key = 1;
+    int64 deleted_at = 2;
+    bool dir = 3;
+    repeated uint64 chunk_handles = 4;
+  }
+
+  message ChunktableRec {
+    uint64 handle = 1;
+    Chunk chunk = 2;
+    message Chunk {
+      uint32 ref = 1;
+      uint32 version = 2;
+      uint32 rep_factor = 3;
+    }
   }
 }

@@ -1,6 +1,7 @@
 package master
 
 import (
+	"maps"
 	"math/rand/v2"
 	"sort"
 	"strconv"
@@ -24,7 +25,7 @@ const (
 )
 
 type chunk struct {
-	sync.RWMutex
+	sync.Mutex     // TODO: this could be inside a lock manager
 	id             uint64
 	ref            uint32
 	version        uint32
@@ -36,7 +37,7 @@ type chunk struct {
 
 func newChunk() *chunk {
 	return &chunk{
-		RWMutex:   sync.RWMutex{},
+		Mutex:     sync.Mutex{},
 		id:        getChunkHandle(),
 		ref:       0,
 		version:   0,
@@ -54,8 +55,12 @@ func (c *chunk) getLocations(exclude []string) []string {
 	locations := make([]string, 0, len(c.locations))
 
 	for loc, t := range c.locations {
-		if _, ok := excludeSet[loc]; !ok && (t.IsZero() || time.Since(t) < chunkSeverDeadline) {
-			locations = append(locations, loc)
+		if _, ok := excludeSet[loc]; !ok {
+			if t.IsZero() || time.Since(t) < chunkSeverDeadline {
+				locations = append(locations, loc)
+			} else {
+				delete(c.locations, loc)
+			}
 		}
 	}
 
@@ -99,28 +104,28 @@ func (c *chunk) updateRep(tx *transaction, rep uint32) {
 	})
 }
 
+const (
+	repRequestExpiry time.Duration = 70 * time.Second
+)
+
 type chunkTable struct {
 	mu      sync.RWMutex
 	entries map[uint64]*chunk
+
+	// handle -> destination server -> time the replicate request was issued
+	repRequestsMu sync.Mutex
+	repRequests   map[uint64]map[string]time.Time
 }
 
 func newChunkTable() *chunkTable {
 	return &chunkTable{
 		mu:      sync.RWMutex{},
 		entries: map[uint64]*chunk{},
+
+		repRequestsMu: sync.Mutex{},
+		repRequests:   make(map[uint64]map[string]time.Time),
 	}
 }
-
-// func (ct *chunkTable) getChunk(id uint64) (*chunk, error) {
-
-// 	ct.mu.RLock()
-// 	defer ct.mu.RUnlock()
-// 	chunk, ok := ct.entries[id]
-// 	if !ok {
-// 		return nil, &ErrNotFound{}
-// 	}
-// 	return chunk, nil
-// }
 
 func (ct *chunkTable) addChunk(tx *transaction, c *chunk) {
 
@@ -155,42 +160,37 @@ func (ct *chunkTable) remove(tx *transaction, handle uint64) {
 		delete(ct.entries, handle)
 		ct.mu.Unlock()
 	})
-	
+
 }
 
 // TODO: drop stale replicas
-func (ct *chunkTable) updateLocations(hb *messages.Heartbeat) {
+func (ct *chunkTable) updateLocations(hb *messages.Chunkserver_Heartbeat) {
 
 	ct.mu.RLock()
+	chunks := maps.Clone(ct.entries)
+	ct.mu.RUnlock()
 	for _, chunkInfo := range hb.Chunks {
 
-		if chunk, ok := ct.entries[chunkInfo.Id]; ok {
+		if chunk, ok := chunks[chunkInfo.Id]; ok {
 			chunk.Lock()
 			chunk.locations[hb.Addr] = time.Now()
 			chunk.Unlock()
-		}
-	}
-	ct.clearStale()
-	ct.mu.RUnlock()
-}
 
-// handle stale primary
-func (ct *chunkTable) clearStale() {
-
-	for _, c := range ct.entries {
-		c.Lock()
-		for loc, t := range c.locations {
-			if time.Since(t) > chunkSeverDeadline {
-				delete(c.locations, loc)
+			ct.repRequestsMu.Lock()
+			if reqs, ok := ct.repRequests[chunk.id]; ok {
+				delete(reqs, hb.Addr)
+				if len(reqs) == 0 {
+					delete(ct.repRequests, chunk.id)
+				}
 			}
+			ct.repRequestsMu.Unlock()
 		}
-		c.Unlock()
 	}
 }
 
 type chunkServer struct {
 	lastBeat time.Time
-	state    *messages.Heartbeat
+	state    *messages.Chunkserver_Heartbeat
 }
 
 type chunkServerRegistry struct {
@@ -200,12 +200,12 @@ type chunkServerRegistry struct {
 
 func newChunkServerRegistry() *chunkServerRegistry {
 	return &chunkServerRegistry{
-		mu:      sync.RWMutex{},
-		entries: map[string]*chunkServer{},
+		mu:             sync.RWMutex{},
+		entries:        make(map[string]*chunkServer),
 	}
 }
 
-func (csr *chunkServerRegistry) update(hb *messages.Heartbeat) {
+func (csr *chunkServerRegistry) update(hb *messages.Chunkserver_Heartbeat) {
 	csr.mu.Lock()
 	cs, ok := csr.entries[hb.Addr]
 	if !ok {
@@ -272,19 +272,4 @@ func (csr *chunkServerRegistry) getServers(n uint32, excludeList []string) ([]st
 		ctr++
 	}
 	return rands, nil
-}
-
-func (csr *chunkServerRegistry) getDeadServers() []*chunkServer {
-
-	var servers []*chunkServer
-	csr.mu.Lock()
-	for addr, cs := range csr.entries {
-		if time.Since(cs.lastBeat) > chunkSeverDeadline {
-			delete(csr.entries, addr)
-			servers = append(servers, cs)
-		}
-	}
-	csr.mu.Unlock()
-
-	return servers
 }

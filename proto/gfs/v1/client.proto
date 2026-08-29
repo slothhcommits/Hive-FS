@@ -13,28 +13,28 @@ message Client {
     MESSAGE_TYPE_CREATE_REQ = 1;
     MESSAGE_TYPE_GET_CHUNK_REPLICAS_REQ = 2;
     MESSAGE_TYPE_SNAPSHOT_REQ = 3;
-    MESSAGE_TYPE_OP_ACK = 4;
+    MESSAGE_TYPE_DELETE = 5;
 
     // chunkserver message types
   }
-}
 
-// master messages
+  // master messages
+  message Create {
+    string path = 1;
+  }
 
-message ClientOpAck {
-  bool success = 1;
-}
+  message GetChunkReplicas {
+    string path = 1;
+    uint32 chunk_idx = 2;
+  }
 
-message Create {
-  string path = 1;
-}
+  message Snapshot {
+    string src = 1;
+    string dst = 2;
+  }
 
-message GetChunkReplicas {
-  string path = 1;
-  uint32 chunk_idx = 2;
-}
-
-message Snapshot {
-  string src = 1;
-  string dst = 2;
+  message Delete {
+    string path = 1;
+  }
+  
 }

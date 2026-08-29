@@ -30,9 +30,10 @@ const (
 	Master_MESSAGE_TYPE_UPDATE_VERSION_REQ Master_MessageType = 102
 	Master_MESSAGE_TYPE_GRANT_LEASE_REQ    Master_MessageType = 103
 	Master_MESSAGE_TYPE_REVOKE_LEASE_REQ   Master_MessageType = 104
-	Master_MESSAGE_TYPE_COPY_CHUNK_REQ     Master_MessageType = 105
+	Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK   Master_MessageType = 105
+	Master_MESSAGE_TYPE_REPLICATE_CHUNK    Master_MessageType = 106
+	Master_MESSAGE_TYPE_DELETE_CHUNK       Master_MessageType = 107
 	// client message types
-	Master_MESSAGE_TYPE_CREATE_FILE_ACK     Master_MessageType = 126
 	Master_MESSAGE_TYPE_SEND_CHUNK_REPLICAS Master_MessageType = 127
 )
 
@@ -44,8 +45,9 @@ var (
 		102: "MESSAGE_TYPE_UPDATE_VERSION_REQ",
 		103: "MESSAGE_TYPE_GRANT_LEASE_REQ",
 		104: "MESSAGE_TYPE_REVOKE_LEASE_REQ",
-		105: "MESSAGE_TYPE_COPY_CHUNK_REQ",
-		126: "MESSAGE_TYPE_CREATE_FILE_ACK",
+		105: "MESSAGE_TYPE_LOCAL_COPY_CHUNK",
+		106: "MESSAGE_TYPE_REPLICATE_CHUNK",
+		107: "MESSAGE_TYPE_DELETE_CHUNK",
 		127: "MESSAGE_TYPE_SEND_CHUNK_REPLICAS",
 	}
 	Master_MessageType_value = map[string]int32{
@@ -54,8 +56,9 @@ var (
 		"MESSAGE_TYPE_UPDATE_VERSION_REQ":  102,
 		"MESSAGE_TYPE_GRANT_LEASE_REQ":     103,
 		"MESSAGE_TYPE_REVOKE_LEASE_REQ":    104,
-		"MESSAGE_TYPE_COPY_CHUNK_REQ":      105,
-		"MESSAGE_TYPE_CREATE_FILE_ACK":     126,
+		"MESSAGE_TYPE_LOCAL_COPY_CHUNK":    105,
+		"MESSAGE_TYPE_REPLICATE_CHUNK":     106,
+		"MESSAGE_TYPE_DELETE_CHUNK":        107,
 		"MESSAGE_TYPE_SEND_CHUNK_REPLICAS": 127,
 	}
 )
@@ -124,26 +127,26 @@ func (*Master) Descriptor() ([]byte, []int) {
 	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0}
 }
 
-type Command struct {
+type Master_Command struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Command) Reset() {
-	*x = Command{}
+func (x *Master_Command) Reset() {
+	*x = Master_Command{}
 	mi := &file_gfs_v1_master_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Command) String() string {
+func (x *Master_Command) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Command) ProtoMessage() {}
+func (*Master_Command) ProtoMessage() {}
 
-func (x *Command) ProtoReflect() protoreflect.Message {
+func (x *Master_Command) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -155,32 +158,32 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Command.ProtoReflect.Descriptor instead.
-func (*Command) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{1}
+// Deprecated: Use Master_Command.ProtoReflect.Descriptor instead.
+func (*Master_Command) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 0}
 }
 
-type HeartbeatRes struct {
+type Master_HeartbeatRes struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cmds          []*Command             `protobuf:"bytes,2,rep,name=cmds,proto3" json:"cmds,omitempty"`
+	Cmds          []*Master_Command      `protobuf:"bytes,2,rep,name=cmds,proto3" json:"cmds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HeartbeatRes) Reset() {
-	*x = HeartbeatRes{}
+func (x *Master_HeartbeatRes) Reset() {
+	*x = Master_HeartbeatRes{}
 	mi := &file_gfs_v1_master_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HeartbeatRes) String() string {
+func (x *Master_HeartbeatRes) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HeartbeatRes) ProtoMessage() {}
+func (*Master_HeartbeatRes) ProtoMessage() {}
 
-func (x *HeartbeatRes) ProtoReflect() protoreflect.Message {
+func (x *Master_HeartbeatRes) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -192,39 +195,39 @@ func (x *HeartbeatRes) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HeartbeatRes.ProtoReflect.Descriptor instead.
-func (*HeartbeatRes) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use Master_HeartbeatRes.ProtoReflect.Descriptor instead.
+func (*Master_HeartbeatRes) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 1}
 }
 
-func (x *HeartbeatRes) GetCmds() []*Command {
+func (x *Master_HeartbeatRes) GetCmds() []*Master_Command {
 	if x != nil {
 		return x.Cmds
 	}
 	return nil
 }
 
-type GrantLease struct {
+type Master_GrantLease struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GrantLease) Reset() {
-	*x = GrantLease{}
+func (x *Master_GrantLease) Reset() {
+	*x = Master_GrantLease{}
 	mi := &file_gfs_v1_master_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GrantLease) String() string {
+func (x *Master_GrantLease) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GrantLease) ProtoMessage() {}
+func (*Master_GrantLease) ProtoMessage() {}
 
-func (x *GrantLease) ProtoReflect() protoreflect.Message {
+func (x *Master_GrantLease) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -236,39 +239,39 @@ func (x *GrantLease) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GrantLease.ProtoReflect.Descriptor instead.
-func (*GrantLease) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use Master_GrantLease.ProtoReflect.Descriptor instead.
+func (*Master_GrantLease) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 2}
 }
 
-func (x *GrantLease) GetId() uint64 {
+func (x *Master_GrantLease) GetId() uint64 {
 	if x != nil {
 		return x.Id
 	}
 	return 0
 }
 
-type RevokeLease struct {
+type Master_RevokeLease struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Handles       []uint64               `protobuf:"varint,1,rep,packed,name=handles,proto3" json:"handles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RevokeLease) Reset() {
-	*x = RevokeLease{}
+func (x *Master_RevokeLease) Reset() {
+	*x = Master_RevokeLease{}
 	mi := &file_gfs_v1_master_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RevokeLease) String() string {
+func (x *Master_RevokeLease) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RevokeLease) ProtoMessage() {}
+func (*Master_RevokeLease) ProtoMessage() {}
 
-func (x *RevokeLease) ProtoReflect() protoreflect.Message {
+func (x *Master_RevokeLease) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -280,19 +283,19 @@ func (x *RevokeLease) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RevokeLease.ProtoReflect.Descriptor instead.
-func (*RevokeLease) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{4}
+// Deprecated: Use Master_RevokeLease.ProtoReflect.Descriptor instead.
+func (*Master_RevokeLease) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 3}
 }
 
-func (x *RevokeLease) GetHandles() []uint64 {
+func (x *Master_RevokeLease) GetHandles() []uint64 {
 	if x != nil {
 		return x.Handles
 	}
 	return nil
 }
 
-type UpdateVersion struct {
+type Master_UpdateVersion struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Version       uint32                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
@@ -300,20 +303,20 @@ type UpdateVersion struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateVersion) Reset() {
-	*x = UpdateVersion{}
+func (x *Master_UpdateVersion) Reset() {
+	*x = Master_UpdateVersion{}
 	mi := &file_gfs_v1_master_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateVersion) String() string {
+func (x *Master_UpdateVersion) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateVersion) ProtoMessage() {}
+func (*Master_UpdateVersion) ProtoMessage() {}
 
-func (x *UpdateVersion) ProtoReflect() protoreflect.Message {
+func (x *Master_UpdateVersion) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -325,26 +328,26 @@ func (x *UpdateVersion) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateVersion.ProtoReflect.Descriptor instead.
-func (*UpdateVersion) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{5}
+// Deprecated: Use Master_UpdateVersion.ProtoReflect.Descriptor instead.
+func (*Master_UpdateVersion) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 4}
 }
 
-func (x *UpdateVersion) GetId() uint64 {
+func (x *Master_UpdateVersion) GetId() uint64 {
 	if x != nil {
 		return x.Id
 	}
 	return 0
 }
 
-func (x *UpdateVersion) GetVersion() uint32 {
+func (x *Master_UpdateVersion) GetVersion() uint32 {
 	if x != nil {
 		return x.Version
 	}
 	return 0
 }
 
-type CopyChunk struct {
+type Master_LocalCopy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SrcId         uint64                 `protobuf:"varint,1,opt,name=src_id,json=srcId,proto3" json:"src_id,omitempty"`
 	DstId         uint64                 `protobuf:"varint,2,opt,name=dst_id,json=dstId,proto3" json:"dst_id,omitempty"`
@@ -352,20 +355,20 @@ type CopyChunk struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CopyChunk) Reset() {
-	*x = CopyChunk{}
+func (x *Master_LocalCopy) Reset() {
+	*x = Master_LocalCopy{}
 	mi := &file_gfs_v1_master_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CopyChunk) String() string {
+func (x *Master_LocalCopy) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CopyChunk) ProtoMessage() {}
+func (*Master_LocalCopy) ProtoMessage() {}
 
-func (x *CopyChunk) ProtoReflect() protoreflect.Message {
+func (x *Master_LocalCopy) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -377,47 +380,48 @@ func (x *CopyChunk) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CopyChunk.ProtoReflect.Descriptor instead.
-func (*CopyChunk) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{6}
+// Deprecated: Use Master_LocalCopy.ProtoReflect.Descriptor instead.
+func (*Master_LocalCopy) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 5}
 }
 
-func (x *CopyChunk) GetSrcId() uint64 {
+func (x *Master_LocalCopy) GetSrcId() uint64 {
 	if x != nil {
 		return x.SrcId
 	}
 	return 0
 }
 
-func (x *CopyChunk) GetDstId() uint64 {
+func (x *Master_LocalCopy) GetDstId() uint64 {
 	if x != nil {
 		return x.DstId
 	}
 	return 0
 }
 
-// client messages
-type CreateFileAck struct {
+type Master_Replicate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Handle        uint64                 `protobuf:"varint,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Version       uint32                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	Src           string                 `protobuf:"bytes,3,opt,name=src,proto3" json:"src,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CreateFileAck) Reset() {
-	*x = CreateFileAck{}
+func (x *Master_Replicate) Reset() {
+	*x = Master_Replicate{}
 	mi := &file_gfs_v1_master_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CreateFileAck) String() string {
+func (x *Master_Replicate) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CreateFileAck) ProtoMessage() {}
+func (*Master_Replicate) ProtoMessage() {}
 
-func (x *CreateFileAck) ProtoReflect() protoreflect.Message {
+func (x *Master_Replicate) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_master_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -429,19 +433,77 @@ func (x *CreateFileAck) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CreateFileAck.ProtoReflect.Descriptor instead.
-func (*CreateFileAck) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{7}
+// Deprecated: Use Master_Replicate.ProtoReflect.Descriptor instead.
+func (*Master_Replicate) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 6}
 }
 
-func (x *CreateFileAck) GetSuccess() bool {
+func (x *Master_Replicate) GetHandle() uint64 {
 	if x != nil {
-		return x.Success
+		return x.Handle
 	}
-	return false
+	return 0
 }
 
-type SendChunkReplicas struct {
+func (x *Master_Replicate) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *Master_Replicate) GetSrc() string {
+	if x != nil {
+		return x.Src
+	}
+	return ""
+}
+
+type Master_DeleteChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        uint64                 `protobuf:"varint,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Master_DeleteChunk) Reset() {
+	*x = Master_DeleteChunk{}
+	mi := &file_gfs_v1_master_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Master_DeleteChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Master_DeleteChunk) ProtoMessage() {}
+
+func (x *Master_DeleteChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Master_DeleteChunk.ProtoReflect.Descriptor instead.
+func (*Master_DeleteChunk) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 7}
+}
+
+func (x *Master_DeleteChunk) GetHandle() uint64 {
+	if x != nil {
+		return x.Handle
+	}
+	return 0
+}
+
+type Master_SendChunkReplicas struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ChunkId       uint64                 `protobuf:"varint,1,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
 	Version       uint32                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
@@ -452,21 +514,21 @@ type SendChunkReplicas struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SendChunkReplicas) Reset() {
-	*x = SendChunkReplicas{}
-	mi := &file_gfs_v1_master_proto_msgTypes[8]
+func (x *Master_SendChunkReplicas) Reset() {
+	*x = Master_SendChunkReplicas{}
+	mi := &file_gfs_v1_master_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SendChunkReplicas) String() string {
+func (x *Master_SendChunkReplicas) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SendChunkReplicas) ProtoMessage() {}
+func (*Master_SendChunkReplicas) ProtoMessage() {}
 
-func (x *SendChunkReplicas) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[8]
+func (x *Master_SendChunkReplicas) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -477,68 +539,68 @@ func (x *SendChunkReplicas) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SendChunkReplicas.ProtoReflect.Descriptor instead.
-func (*SendChunkReplicas) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{8}
+// Deprecated: Use Master_SendChunkReplicas.ProtoReflect.Descriptor instead.
+func (*Master_SendChunkReplicas) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 8}
 }
 
-func (x *SendChunkReplicas) GetChunkId() uint64 {
+func (x *Master_SendChunkReplicas) GetChunkId() uint64 {
 	if x != nil {
 		return x.ChunkId
 	}
 	return 0
 }
 
-func (x *SendChunkReplicas) GetVersion() uint32 {
+func (x *Master_SendChunkReplicas) GetVersion() uint32 {
 	if x != nil {
 		return x.Version
 	}
 	return 0
 }
 
-func (x *SendChunkReplicas) GetPrimary() string {
+func (x *Master_SendChunkReplicas) GetPrimary() string {
 	if x != nil {
 		return x.Primary
 	}
 	return ""
 }
 
-func (x *SendChunkReplicas) GetLeaseExpiry() int64 {
+func (x *Master_SendChunkReplicas) GetLeaseExpiry() int64 {
 	if x != nil {
 		return x.LeaseExpiry
 	}
 	return 0
 }
 
-func (x *SendChunkReplicas) GetLocations() []string {
+func (x *Master_SendChunkReplicas) GetLocations() []string {
 	if x != nil {
 		return x.Locations
 	}
 	return nil
 }
 
-type Log struct {
+type Master_Log struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Recs          []*OperationRec        `protobuf:"bytes,1,rep,name=recs,proto3" json:"recs,omitempty"`
+	Recs          []*Master_OperationRec `protobuf:"bytes,1,rep,name=recs,proto3" json:"recs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Log) Reset() {
-	*x = Log{}
-	mi := &file_gfs_v1_master_proto_msgTypes[9]
+func (x *Master_Log) Reset() {
+	*x = Master_Log{}
+	mi := &file_gfs_v1_master_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Log) String() string {
+func (x *Master_Log) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Log) ProtoMessage() {}
+func (*Master_Log) ProtoMessage() {}
 
-func (x *Log) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[9]
+func (x *Master_Log) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -549,19 +611,19 @@ func (x *Log) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Log.ProtoReflect.Descriptor instead.
-func (*Log) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{9}
+// Deprecated: Use Master_Log.ProtoReflect.Descriptor instead.
+func (*Master_Log) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 9}
 }
 
-func (x *Log) GetRecs() []*OperationRec {
+func (x *Master_Log) GetRecs() []*Master_OperationRec {
 	if x != nil {
 		return x.Recs
 	}
 	return nil
 }
 
-type OperationRec struct {
+type Master_OperationRec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OpType        uint32                 `protobuf:"varint,1,opt,name=op_type,json=opType,proto3" json:"op_type,omitempty"`
 	Args          []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
@@ -569,21 +631,21 @@ type OperationRec struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *OperationRec) Reset() {
-	*x = OperationRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[10]
+func (x *Master_OperationRec) Reset() {
+	*x = Master_OperationRec{}
+	mi := &file_gfs_v1_master_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *OperationRec) String() string {
+func (x *Master_OperationRec) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*OperationRec) ProtoMessage() {}
+func (*Master_OperationRec) ProtoMessage() {}
 
-func (x *OperationRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[10]
+func (x *Master_OperationRec) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -594,49 +656,49 @@ func (x *OperationRec) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use OperationRec.ProtoReflect.Descriptor instead.
-func (*OperationRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{10}
+// Deprecated: Use Master_OperationRec.ProtoReflect.Descriptor instead.
+func (*Master_OperationRec) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 10}
 }
 
-func (x *OperationRec) GetOpType() uint32 {
+func (x *Master_OperationRec) GetOpType() uint32 {
 	if x != nil {
 		return x.OpType
 	}
 	return 0
 }
 
-func (x *OperationRec) GetArgs() []string {
+func (x *Master_OperationRec) GetArgs() []string {
 	if x != nil {
 		return x.Args
 	}
 	return nil
 }
 
-type NamespaceRec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
-	Dir           bool                   `protobuf:"varint,2,opt,name=dir,proto3" json:"dir,omitempty"`
-	Metadata      *NamespaceRec_Metadata `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
+type Master_NamespaceRec struct {
+	state         protoimpl.MessageState        `protogen:"open.v1"`
+	Path          string                        `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Dir           bool                          `protobuf:"varint,2,opt,name=dir,proto3" json:"dir,omitempty"`
+	Metadata      *Master_NamespaceRec_Metadata `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *NamespaceRec) Reset() {
-	*x = NamespaceRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[11]
+func (x *Master_NamespaceRec) Reset() {
+	*x = Master_NamespaceRec{}
+	mi := &file_gfs_v1_master_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *NamespaceRec) String() string {
+func (x *Master_NamespaceRec) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*NamespaceRec) ProtoMessage() {}
+func (*Master_NamespaceRec) ProtoMessage() {}
 
-func (x *NamespaceRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[11]
+func (x *Master_NamespaceRec) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -647,55 +709,57 @@ func (x *NamespaceRec) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use NamespaceRec.ProtoReflect.Descriptor instead.
-func (*NamespaceRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{11}
+// Deprecated: Use Master_NamespaceRec.ProtoReflect.Descriptor instead.
+func (*Master_NamespaceRec) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 11}
 }
 
-func (x *NamespaceRec) GetPath() string {
+func (x *Master_NamespaceRec) GetPath() string {
 	if x != nil {
 		return x.Path
 	}
 	return ""
 }
 
-func (x *NamespaceRec) GetDir() bool {
+func (x *Master_NamespaceRec) GetDir() bool {
 	if x != nil {
 		return x.Dir
 	}
 	return false
 }
 
-func (x *NamespaceRec) GetMetadata() *NamespaceRec_Metadata {
+func (x *Master_NamespaceRec) GetMetadata() *Master_NamespaceRec_Metadata {
 	if x != nil {
 		return x.Metadata
 	}
 	return nil
 }
 
-type ChunktableRec struct {
+type Master_DeletedRec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Handle        uint64                 `protobuf:"varint,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Chunk         *ChunktableRec_Chunk   `protobuf:"bytes,2,opt,name=chunk,proto3" json:"chunk,omitempty"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	DeletedAt     int64                  `protobuf:"varint,2,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	Dir           bool                   `protobuf:"varint,3,opt,name=dir,proto3" json:"dir,omitempty"`
+	ChunkHandles  []uint64               `protobuf:"varint,4,rep,packed,name=chunk_handles,json=chunkHandles,proto3" json:"chunk_handles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ChunktableRec) Reset() {
-	*x = ChunktableRec{}
-	mi := &file_gfs_v1_master_proto_msgTypes[12]
+func (x *Master_DeletedRec) Reset() {
+	*x = Master_DeletedRec{}
+	mi := &file_gfs_v1_master_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ChunktableRec) String() string {
+func (x *Master_DeletedRec) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ChunktableRec) ProtoMessage() {}
+func (*Master_DeletedRec) ProtoMessage() {}
 
-func (x *ChunktableRec) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[12]
+func (x *Master_DeletedRec) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -706,70 +770,136 @@ func (x *ChunktableRec) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ChunktableRec.ProtoReflect.Descriptor instead.
-func (*ChunktableRec) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{12}
+// Deprecated: Use Master_DeletedRec.ProtoReflect.Descriptor instead.
+func (*Master_DeletedRec) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 12}
 }
 
-func (x *ChunktableRec) GetHandle() uint64 {
+func (x *Master_DeletedRec) GetKey() string {
 	if x != nil {
-		return x.Handle
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Master_DeletedRec) GetDeletedAt() int64 {
+	if x != nil {
+		return x.DeletedAt
 	}
 	return 0
 }
 
-func (x *ChunktableRec) GetChunk() *ChunktableRec_Chunk {
+func (x *Master_DeletedRec) GetDir() bool {
 	if x != nil {
-		return x.Chunk
+		return x.Dir
 	}
-	return nil
+	return false
 }
 
-type NamespaceRec_Metadata struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ChunkHandles  []uint64               `protobuf:"varint,1,rep,packed,name=chunk_handles,json=chunkHandles,proto3" json:"chunk_handles,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *NamespaceRec_Metadata) Reset() {
-	*x = NamespaceRec_Metadata{}
-	mi := &file_gfs_v1_master_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *NamespaceRec_Metadata) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*NamespaceRec_Metadata) ProtoMessage() {}
-
-func (x *NamespaceRec_Metadata) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use NamespaceRec_Metadata.ProtoReflect.Descriptor instead.
-func (*NamespaceRec_Metadata) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{11, 0}
-}
-
-func (x *NamespaceRec_Metadata) GetChunkHandles() []uint64 {
+func (x *Master_DeletedRec) GetChunkHandles() []uint64 {
 	if x != nil {
 		return x.ChunkHandles
 	}
 	return nil
 }
 
-type ChunktableRec_Chunk struct {
+type Master_ChunktableRec struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	Handle        uint64                      `protobuf:"varint,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Chunk         *Master_ChunktableRec_Chunk `protobuf:"bytes,2,opt,name=chunk,proto3" json:"chunk,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Master_ChunktableRec) Reset() {
+	*x = Master_ChunktableRec{}
+	mi := &file_gfs_v1_master_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Master_ChunktableRec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Master_ChunktableRec) ProtoMessage() {}
+
+func (x *Master_ChunktableRec) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Master_ChunktableRec.ProtoReflect.Descriptor instead.
+func (*Master_ChunktableRec) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 13}
+}
+
+func (x *Master_ChunktableRec) GetHandle() uint64 {
+	if x != nil {
+		return x.Handle
+	}
+	return 0
+}
+
+func (x *Master_ChunktableRec) GetChunk() *Master_ChunktableRec_Chunk {
+	if x != nil {
+		return x.Chunk
+	}
+	return nil
+}
+
+type Master_NamespaceRec_Metadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChunkHandles  []uint64               `protobuf:"varint,1,rep,packed,name=chunk_handles,json=chunkHandles,proto3" json:"chunk_handles,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Master_NamespaceRec_Metadata) Reset() {
+	*x = Master_NamespaceRec_Metadata{}
+	mi := &file_gfs_v1_master_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Master_NamespaceRec_Metadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Master_NamespaceRec_Metadata) ProtoMessage() {}
+
+func (x *Master_NamespaceRec_Metadata) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Master_NamespaceRec_Metadata.ProtoReflect.Descriptor instead.
+func (*Master_NamespaceRec_Metadata) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 11, 0}
+}
+
+func (x *Master_NamespaceRec_Metadata) GetChunkHandles() []uint64 {
+	if x != nil {
+		return x.ChunkHandles
+	}
+	return nil
+}
+
+type Master_ChunktableRec_Chunk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Ref           uint32                 `protobuf:"varint,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	Version       uint32                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
@@ -778,21 +908,21 @@ type ChunktableRec_Chunk struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ChunktableRec_Chunk) Reset() {
-	*x = ChunktableRec_Chunk{}
-	mi := &file_gfs_v1_master_proto_msgTypes[14]
+func (x *Master_ChunktableRec_Chunk) Reset() {
+	*x = Master_ChunktableRec_Chunk{}
+	mi := &file_gfs_v1_master_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ChunktableRec_Chunk) String() string {
+func (x *Master_ChunktableRec_Chunk) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ChunktableRec_Chunk) ProtoMessage() {}
+func (*Master_ChunktableRec_Chunk) ProtoMessage() {}
 
-func (x *ChunktableRec_Chunk) ProtoReflect() protoreflect.Message {
-	mi := &file_gfs_v1_master_proto_msgTypes[14]
+func (x *Master_ChunktableRec_Chunk) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_master_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,26 +933,26 @@ func (x *ChunktableRec_Chunk) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ChunktableRec_Chunk.ProtoReflect.Descriptor instead.
-func (*ChunktableRec_Chunk) Descriptor() ([]byte, []int) {
-	return file_gfs_v1_master_proto_rawDescGZIP(), []int{12, 0}
+// Deprecated: Use Master_ChunktableRec_Chunk.ProtoReflect.Descriptor instead.
+func (*Master_ChunktableRec_Chunk) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_master_proto_rawDescGZIP(), []int{0, 13, 0}
 }
 
-func (x *ChunktableRec_Chunk) GetRef() uint32 {
+func (x *Master_ChunktableRec_Chunk) GetRef() uint32 {
 	if x != nil {
 		return x.Ref
 	}
 	return 0
 }
 
-func (x *ChunktableRec_Chunk) GetVersion() uint32 {
+func (x *Master_ChunktableRec_Chunk) GetVersion() uint32 {
 	if x != nil {
 		return x.Version
 	}
 	return 0
 }
 
-func (x *ChunktableRec_Chunk) GetRepFactor() uint32 {
+func (x *Master_ChunktableRec_Chunk) GetRepFactor() uint32 {
 	if x != nil {
 		return x.RepFactor
 	}
@@ -833,58 +963,70 @@ var File_gfs_v1_master_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_master_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\xa9\x02\n" +
-	"\x06Master\"\x9e\x02\n" +
-	"\vMessageType\x12\x1c\n" +
-	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
-	"\x1aMESSAGE_TYPE_HEARTBEAT_RES\x10e\x12#\n" +
-	"\x1fMESSAGE_TYPE_UPDATE_VERSION_REQ\x10f\x12 \n" +
-	"\x1cMESSAGE_TYPE_GRANT_LEASE_REQ\x10g\x12!\n" +
-	"\x1dMESSAGE_TYPE_REVOKE_LEASE_REQ\x10h\x12\x1f\n" +
-	"\x1bMESSAGE_TYPE_COPY_CHUNK_REQ\x10i\x12 \n" +
-	"\x1cMESSAGE_TYPE_CREATE_FILE_ACK\x10~\x12$\n" +
-	" MESSAGE_TYPE_SEND_CHUNK_REPLICAS\x10\x7f\"\t\n" +
-	"\aCommand\"3\n" +
-	"\fHeartbeatRes\x12#\n" +
-	"\x04cmds\x18\x02 \x03(\v2\x0f.gfs.v1.CommandR\x04cmds\"\x1c\n" +
+	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\xb9\v\n" +
+	"\x06Master\x1a\t\n" +
+	"\aCommand\x1a:\n" +
+	"\fHeartbeatRes\x12*\n" +
+	"\x04cmds\x18\x02 \x03(\v2\x16.gfs.v1.Master.CommandR\x04cmds\x1a\x1c\n" +
 	"\n" +
 	"GrantLease\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"'\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x1a'\n" +
 	"\vRevokeLease\x12\x18\n" +
-	"\ahandles\x18\x01 \x03(\x04R\ahandles\"9\n" +
+	"\ahandles\x18\x01 \x03(\x04R\ahandles\x1a9\n" +
 	"\rUpdateVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\rR\aversion\"9\n" +
-	"\tCopyChunk\x12\x15\n" +
+	"\aversion\x18\x02 \x01(\rR\aversion\x1a9\n" +
+	"\tLocalCopy\x12\x15\n" +
 	"\x06src_id\x18\x01 \x01(\x04R\x05srcId\x12\x15\n" +
-	"\x06dst_id\x18\x02 \x01(\x04R\x05dstId\")\n" +
-	"\rCreateFileAck\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xa3\x01\n" +
+	"\x06dst_id\x18\x02 \x01(\x04R\x05dstId\x1aO\n" +
+	"\tReplicate\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\x04R\x06handle\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\rR\aversion\x12\x10\n" +
+	"\x03src\x18\x03 \x01(\tR\x03src\x1a%\n" +
+	"\vDeleteChunk\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\x04R\x06handle\x1a\xa3\x01\n" +
 	"\x11SendChunkReplicas\x12\x19\n" +
 	"\bchunk_id\x18\x01 \x01(\x04R\achunkId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\x12\x18\n" +
 	"\aprimary\x18\x03 \x01(\tR\aprimary\x12!\n" +
 	"\flease_expiry\x18\x04 \x01(\x03R\vleaseExpiry\x12\x1c\n" +
-	"\tlocations\x18\x05 \x03(\tR\tlocations\"/\n" +
-	"\x03Log\x12(\n" +
-	"\x04recs\x18\x01 \x03(\v2\x14.gfs.v1.OperationRecR\x04recs\";\n" +
+	"\tlocations\x18\x05 \x03(\tR\tlocations\x1a6\n" +
+	"\x03Log\x12/\n" +
+	"\x04recs\x18\x01 \x03(\v2\x1b.gfs.v1.Master.OperationRecR\x04recs\x1a;\n" +
 	"\fOperationRec\x12\x17\n" +
 	"\aop_type\x18\x01 \x01(\rR\x06opType\x12\x12\n" +
-	"\x04args\x18\x02 \x03(\tR\x04args\"\xa0\x01\n" +
+	"\x04args\x18\x02 \x03(\tR\x04args\x1a\xa7\x01\n" +
 	"\fNamespaceRec\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x10\n" +
-	"\x03dir\x18\x02 \x01(\bR\x03dir\x129\n" +
-	"\bmetadata\x18\x03 \x01(\v2\x1d.gfs.v1.NamespaceRec.MetadataR\bmetadata\x1a/\n" +
+	"\x03dir\x18\x02 \x01(\bR\x03dir\x12@\n" +
+	"\bmetadata\x18\x03 \x01(\v2$.gfs.v1.Master.NamespaceRec.MetadataR\bmetadata\x1a/\n" +
 	"\bMetadata\x12#\n" +
-	"\rchunk_handles\x18\x01 \x03(\x04R\fchunkHandles\"\xae\x01\n" +
+	"\rchunk_handles\x18\x01 \x03(\x04R\fchunkHandles\x1at\n" +
+	"\n" +
+	"DeletedRec\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1d\n" +
+	"\n" +
+	"deleted_at\x18\x02 \x01(\x03R\tdeletedAt\x12\x10\n" +
+	"\x03dir\x18\x03 \x01(\bR\x03dir\x12#\n" +
+	"\rchunk_handles\x18\x04 \x03(\x04R\fchunkHandles\x1a\xb5\x01\n" +
 	"\rChunktableRec\x12\x16\n" +
-	"\x06handle\x18\x01 \x01(\x04R\x06handle\x121\n" +
-	"\x05chunk\x18\x02 \x01(\v2\x1b.gfs.v1.ChunktableRec.ChunkR\x05chunk\x1aR\n" +
+	"\x06handle\x18\x01 \x01(\x04R\x06handle\x128\n" +
+	"\x05chunk\x18\x02 \x01(\v2\".gfs.v1.Master.ChunktableRec.ChunkR\x05chunk\x1aR\n" +
 	"\x05Chunk\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\rR\x03ref\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\x12\x1d\n" +
 	"\n" +
-	"rep_factor\x18\x03 \x01(\rR\trepFactorB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"rep_factor\x18\x03 \x01(\rR\trepFactor\"\xbf\x02\n" +
+	"\vMessageType\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aMESSAGE_TYPE_HEARTBEAT_RES\x10e\x12#\n" +
+	"\x1fMESSAGE_TYPE_UPDATE_VERSION_REQ\x10f\x12 \n" +
+	"\x1cMESSAGE_TYPE_GRANT_LEASE_REQ\x10g\x12!\n" +
+	"\x1dMESSAGE_TYPE_REVOKE_LEASE_REQ\x10h\x12!\n" +
+	"\x1dMESSAGE_TYPE_LOCAL_COPY_CHUNK\x10i\x12 \n" +
+	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10j\x12\x1d\n" +
+	"\x19MESSAGE_TYPE_DELETE_CHUNK\x10k\x12$\n" +
+	" MESSAGE_TYPE_SEND_CHUNK_REPLICAS\x10\x7fB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_master_proto_rawDescOnce sync.Once
@@ -899,30 +1041,32 @@ func file_gfs_v1_master_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_master_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_master_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_gfs_v1_master_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_gfs_v1_master_proto_goTypes = []any{
-	(Master_MessageType)(0),       // 0: gfs.v1.Master.MessageType
-	(*Master)(nil),                // 1: gfs.v1.Master
-	(*Command)(nil),               // 2: gfs.v1.Command
-	(*HeartbeatRes)(nil),          // 3: gfs.v1.HeartbeatRes
-	(*GrantLease)(nil),            // 4: gfs.v1.GrantLease
-	(*RevokeLease)(nil),           // 5: gfs.v1.RevokeLease
-	(*UpdateVersion)(nil),         // 6: gfs.v1.UpdateVersion
-	(*CopyChunk)(nil),             // 7: gfs.v1.CopyChunk
-	(*CreateFileAck)(nil),         // 8: gfs.v1.CreateFileAck
-	(*SendChunkReplicas)(nil),     // 9: gfs.v1.SendChunkReplicas
-	(*Log)(nil),                   // 10: gfs.v1.Log
-	(*OperationRec)(nil),          // 11: gfs.v1.OperationRec
-	(*NamespaceRec)(nil),          // 12: gfs.v1.NamespaceRec
-	(*ChunktableRec)(nil),         // 13: gfs.v1.ChunktableRec
-	(*NamespaceRec_Metadata)(nil), // 14: gfs.v1.NamespaceRec.Metadata
-	(*ChunktableRec_Chunk)(nil),   // 15: gfs.v1.ChunktableRec.Chunk
+	(Master_MessageType)(0),              // 0: gfs.v1.Master.MessageType
+	(*Master)(nil),                       // 1: gfs.v1.Master
+	(*Master_Command)(nil),               // 2: gfs.v1.Master.Command
+	(*Master_HeartbeatRes)(nil),          // 3: gfs.v1.Master.HeartbeatRes
+	(*Master_GrantLease)(nil),            // 4: gfs.v1.Master.GrantLease
+	(*Master_RevokeLease)(nil),           // 5: gfs.v1.Master.RevokeLease
+	(*Master_UpdateVersion)(nil),         // 6: gfs.v1.Master.UpdateVersion
+	(*Master_LocalCopy)(nil),             // 7: gfs.v1.Master.LocalCopy
+	(*Master_Replicate)(nil),             // 8: gfs.v1.Master.Replicate
+	(*Master_DeleteChunk)(nil),           // 9: gfs.v1.Master.DeleteChunk
+	(*Master_SendChunkReplicas)(nil),     // 10: gfs.v1.Master.SendChunkReplicas
+	(*Master_Log)(nil),                   // 11: gfs.v1.Master.Log
+	(*Master_OperationRec)(nil),          // 12: gfs.v1.Master.OperationRec
+	(*Master_NamespaceRec)(nil),          // 13: gfs.v1.Master.NamespaceRec
+	(*Master_DeletedRec)(nil),            // 14: gfs.v1.Master.DeletedRec
+	(*Master_ChunktableRec)(nil),         // 15: gfs.v1.Master.ChunktableRec
+	(*Master_NamespaceRec_Metadata)(nil), // 16: gfs.v1.Master.NamespaceRec.Metadata
+	(*Master_ChunktableRec_Chunk)(nil),   // 17: gfs.v1.Master.ChunktableRec.Chunk
 }
 var file_gfs_v1_master_proto_depIdxs = []int32{
-	2,  // 0: gfs.v1.HeartbeatRes.cmds:type_name -> gfs.v1.Command
-	11, // 1: gfs.v1.Log.recs:type_name -> gfs.v1.OperationRec
-	14, // 2: gfs.v1.NamespaceRec.metadata:type_name -> gfs.v1.NamespaceRec.Metadata
-	15, // 3: gfs.v1.ChunktableRec.chunk:type_name -> gfs.v1.ChunktableRec.Chunk
+	2,  // 0: gfs.v1.Master.HeartbeatRes.cmds:type_name -> gfs.v1.Master.Command
+	12, // 1: gfs.v1.Master.Log.recs:type_name -> gfs.v1.Master.OperationRec
+	16, // 2: gfs.v1.Master.NamespaceRec.metadata:type_name -> gfs.v1.Master.NamespaceRec.Metadata
+	17, // 3: gfs.v1.Master.ChunktableRec.chunk:type_name -> gfs.v1.Master.ChunktableRec.Chunk
 	4,  // [4:4] is the sub-list for method output_type
 	4,  // [4:4] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
@@ -941,7 +1085,7 @@ func file_gfs_v1_master_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_master_proto_rawDesc), len(file_gfs_v1_master_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

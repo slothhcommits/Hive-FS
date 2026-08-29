@@ -35,9 +35,10 @@ const (
 	// Namespace mutations
 	CREATE_FILE operationType = iota // CREATE_FILE "filename"
 	CREATE_DIR                       // CREATE_DIR "dirname"
-	REMOVE                           // REMOVE "location"
 	MOVE                             // MOVE "src" "dst"
 	SNAPSHOT                         // SNAPSHOT "src" "dst"
+	REMOVE                           // REMOVE "location" "time"
+	DELETE                           // DELETE "deletedKey" "processedChunkHandles"
 
 	// Node metadata mutations
 	APPEND_CHUNK  // APPEND_CHUNK "path" "chunkhandle"
@@ -129,9 +130,9 @@ func (l *opLog) checkSum(data []byte) uint32 {
 
 func (l *opLog) logAndApply(operations []*operation, exec []func()) {
 
-	log := messages.Log{Recs: []*messages.OperationRec{}}
+	log := messages.Master_Log{Recs: []*messages.Master_OperationRec{}}
 	for _, op := range operations {
-		rec := messages.OperationRec{
+		rec := messages.Master_OperationRec{
 			OpType: uint32(op.t),
 			Args:   op.args,
 		}
@@ -316,6 +317,10 @@ func (s *persistentState) flushState(handle uint64) {
 	namespace := maps.Clone(s.namespace.entries)
 	s.namespace.mu.RUnlock()
 
+	s.deletedMu.Lock()
+	deleted := maps.Clone(s.namespace.deleted)
+	s.deletedMu.Unlock()
+
 	s.chunkTable.mu.RLock()
 	chunkTable := maps.Clone(s.chunkTable.entries)
 	s.chunkTable.mu.RUnlock()
@@ -340,10 +345,10 @@ func (s *persistentState) flushState(handle uint64) {
 			chunkHandles = append(chunkHandles, h)
 		}
 
-		rec, err := proto.Marshal(&messages.NamespaceRec{
+		rec, err := proto.Marshal(&messages.Master_NamespaceRec{
 			Path: k,
 			Dir:  n.dir,
-			Metadata: &messages.NamespaceRec_Metadata{
+			Metadata: &messages.Master_NamespaceRec_Metadata{
 				ChunkHandles: chunkHandles,
 			},
 		})
@@ -376,13 +381,55 @@ func (s *persistentState) flushState(handle uint64) {
 	writeFile(buf.Bytes(), file)
 	buf.Reset()
 
+	for k, d := range deleted {
+
+		d.RLock()
+
+		chunkHandles := []uint64{}
+		chunkHandles = append(chunkHandles, d.metadata.chunkHandles...)
+
+		rec, err := proto.Marshal(&messages.Master_DeletedRec{
+			Key:          k,
+			DeletedAt:    d.deletedAt,
+			Dir:          d.dir,
+			ChunkHandles: chunkHandles,
+		})
+		if err != nil {
+			panic(err)
+		}
+		d.RUnlock()
+
+		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = buf.Write(rec)
+		if err != nil {
+			panic(err)
+		}
+
+		if buf.Len() >= maxMem {
+			writeFile(buf.Bytes(), file)
+			buf.Reset()
+		}
+	}
+
+	err = binary.Write(&buf, binary.BigEndian, checkpointDelim)
+	if err != nil {
+		panic(err)
+	}
+
+	writeFile(buf.Bytes(), file)
+	buf.Reset()
+
 	for k, c := range chunkTable {
 
-		c.RLock()
+		c.Lock()
 
-		rec, err := proto.Marshal(&messages.ChunktableRec{
+		rec, err := proto.Marshal(&messages.Master_ChunktableRec{
 			Handle: k,
-			Chunk: &messages.ChunktableRec_Chunk{
+			Chunk: &messages.Master_ChunktableRec_Chunk{
 				Ref:       c.ref,
 				Version:   c.version,
 				RepFactor: c.repFactor,
@@ -391,7 +438,7 @@ func (s *persistentState) flushState(handle uint64) {
 		if err != nil {
 			panic(err)
 		}
-		c.RUnlock()
+		c.Unlock()
 
 		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
 		if err != nil {
@@ -433,7 +480,7 @@ func (s *persistentState) flushState(handle uint64) {
 	dir.Close()
 }
 
-func (s *persistentState) applyOp(op *messages.OperationRec) {
+func (s *persistentState) applyOp(op *messages.Master_OperationRec) {
 
 	switch operationType(op.OpType) {
 
@@ -450,8 +497,35 @@ func (s *persistentState) applyOp(op *messages.OperationRec) {
 
 	case REMOVE:
 		s.namespace.mu.Lock()
-		delete(s.namespace.entries, op.Args[0])
+		s.deletedMu.Lock()
+		if s.namespace.entries[op.Args[0]] != nil {
+			delTime, err := strconv.ParseInt(op.Args[1], 10, 64)
+			if err != nil {
+				panic(err)
+			}
+			s.deleted[op.Args[0]+"/"+op.Args[1]] = &deletedNode{
+				deletedAt: delTime,
+				node:      s.namespace.entries[op.Args[0]],
+			}
+			delete(s.namespace.entries, op.Args[0])
+		}
+		s.deletedMu.Unlock()
 		s.namespace.mu.Unlock()
+
+	case DELETE:
+		processed, err := strconv.Atoi(op.Args[1])
+		if err != nil {
+			panic(err)
+		}
+		s.deletedMu.Lock()
+		if d, ok := s.deleted[op.Args[0]]; ok {
+			if processed >= len(d.chunkHandles) {
+				delete(s.deleted, op.Args[0])
+			} else {
+				d.chunkHandles = d.chunkHandles[processed:]
+			}
+		}
+		s.deletedMu.Unlock()
 
 	case MOVE:
 		s.namespace.mu.Lock()
@@ -605,7 +679,7 @@ func (s *persistentState) replayLog(file *os.File) int64 {
 			return offset // corrupted write
 		}
 
-		var log messages.Log
+		var log messages.Master_Log
 		err = proto.Unmarshal(buf, &log)
 		if err != nil {
 			panic(err)
@@ -641,7 +715,7 @@ func (s *persistentState) loadCheckpoint(file *os.File) {
 			break
 		}
 
-		var rec messages.NamespaceRec
+		var rec messages.Master_NamespaceRec
 		err = proto.Unmarshal(buf, &rec)
 		if err != nil {
 			panic(err)
@@ -658,6 +732,35 @@ func (s *persistentState) loadCheckpoint(file *os.File) {
 	}
 	s.namespace.mu.Unlock()
 
+	s.deletedMu.Lock()
+	for {
+
+		_, buf, err := readFileSegment(file)
+		if err != nil {
+			panic(err)
+		}
+
+		if len(buf) == 0 {
+			break
+		}
+
+		var rec messages.Master_DeletedRec
+		err = proto.Unmarshal(buf, &rec)
+		if err != nil {
+			panic(err)
+		}
+
+		s.namespace.deleted[rec.Key] = &deletedNode{
+			deletedAt: rec.DeletedAt,
+			node: &node{
+				dir:      rec.Dir,
+				metadata: metadata{chunkHandles: rec.ChunkHandles},
+			},
+		}
+
+	}
+	s.deletedMu.Unlock()
+
 	s.chunkTable.mu.Lock()
 	defer s.chunkTable.mu.Unlock()
 
@@ -671,7 +774,7 @@ func (s *persistentState) loadCheckpoint(file *os.File) {
 			panic(err)
 		}
 
-		var rec messages.ChunktableRec
+		var rec messages.Master_ChunktableRec
 		err = proto.Unmarshal(buf, &rec)
 		if err != nil {
 			panic(err)

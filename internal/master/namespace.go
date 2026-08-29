@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type metadata struct {
@@ -48,6 +49,11 @@ type node struct {
 	metadata
 }
 
+type deletedNode struct {
+	deletedAt int64
+	*node
+}
+
 type lock struct {
 	ref uint
 	sync.RWMutex
@@ -79,6 +85,9 @@ type namespace struct {
 
 	mu      sync.RWMutex
 	entries map[string]*node
+
+	deletedMu sync.Mutex
+	deleted   map[string]*deletedNode
 }
 
 func newNamesapce() *namespace {
@@ -86,6 +95,7 @@ func newNamesapce() *namespace {
 		lm:      newLockManager(),
 		mu:      sync.RWMutex{},
 		entries: make(map[string]*node),
+		deleted: make(map[string]*deletedNode),
 	}
 }
 
@@ -341,7 +351,7 @@ func (ns *namespace) lookup(tx *transaction, path string) (*node, error) {
 	}
 
 	tx.addFunc(unlock)
-	
+
 	return f, nil
 }
 
@@ -677,7 +687,6 @@ func (ns *namespace) list(path string) ([]*node, error) {
 	return nodes, nil
 }
 
-// TODO: tombstone and gc
 func (ns *namespace) delete(tx *transaction, path string) error {
 
 	lockReqs := []*lockReq{{path: path, read: false}}
@@ -698,19 +707,25 @@ func (ns *namespace) delete(tx *transaction, path string) error {
 
 	contents := ns.prefixScan(path)
 
-	// TODO : should be moved to tombstone val but will do that when implement GC
+	delTime := time.Now().UnixNano()
 	for _, path := range contents {
 		tx.addOp(&operation{
 			t:    REMOVE,
-			args: []string{path},
+			args: []string{path, strconv.FormatInt(delTime, 10)},
 		})
 	}
 
 	tx.addFunc(func() {
 		ns.mu.Lock()
+		ns.deletedMu.Lock()
 		for _, p := range contents {
+			ns.deleted[p+"/"+strconv.FormatInt(delTime, 10)] = &deletedNode{
+				deletedAt: delTime,
+				node:      ns.entries[p],
+			}
 			delete(ns.entries, p)
 		}
+		ns.deletedMu.Unlock()
 		ns.mu.Unlock()
 		unlock()
 	})

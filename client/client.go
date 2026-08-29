@@ -101,7 +101,7 @@ func writeChunk(path string, chunkIdx uint32, cursor uint32, r *internal.ChunkRe
 	res, err := request(
 		masterAddr,
 		&hive.Metadata{Type: getReplicas},
-		&messages.GetChunkReplicas{
+		&messages.Client_GetChunkReplicas{
 			Path:     path,
 			ChunkIdx: chunkIdx,
 		},
