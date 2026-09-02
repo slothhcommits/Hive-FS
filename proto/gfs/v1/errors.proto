@@ -13,11 +13,15 @@ message Error {
   enum Code {
     CODE_UNSPECIFIED = 0;
 
-    // shared 151 - 200
+    // shared 151 - 160
     CODE_UNMARSHAL_FAILED = 151;
+    CODE_OP_FAILED = 152;
 
-    // client 1 - 50
-    CODE_OP_FAILED = 1;
+    // chunkserver
+    CODE_CHUNKSERVER_BUSY = 153;
+    CODE_CHUNKSERVER_STREAM_FAILED = 154;
+    CODE_CHUNKSERVER_CHUNK_UNAVAILABLE = 155;
+    CODE_CHUNKSERVER_LEASE_UNAVAILABLE = 156;
   }
 
   Code code = 1;

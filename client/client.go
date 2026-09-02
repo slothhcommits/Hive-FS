@@ -5,7 +5,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/PraveenC2002/gfs/internal/chunkserver"
+	"github.com/PraveenC2002/gfs/internal"
 	"github.com/PraveenC2002/gfs/internal/hive"
 	"github.com/PraveenC2002/gfs/internal/messages"
 	"google.golang.org/protobuf/proto"
@@ -115,8 +115,6 @@ func writeChunk(path string, chunkIdx uint32, cursor uint32, r *internal.ChunkRe
 	if err := proto.Unmarshal(res.Payload, data); err != nil {
 		return err
 	}
-
-	
 
 	return nil
 }

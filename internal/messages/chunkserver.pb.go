@@ -27,6 +27,9 @@ const (
 	Chunkserver_MESSAGE_TYPE_UNSPECIFIED Chunkserver_MessageType = 0
 	// master message types
 	Chunkserver_MESSAGE_TYPE_HEARTBEAT Chunkserver_MessageType = 51
+	// chunkserver message types
+	Chunkserver_MESSAGE_TYPE_PING        Chunkserver_MessageType = 91
+	Chunkserver_MESSAGE_TYPE_DATA_STREAM Chunkserver_MessageType = 92
 )
 
 // Enum value maps for Chunkserver_MessageType.
@@ -34,10 +37,14 @@ var (
 	Chunkserver_MessageType_name = map[int32]string{
 		0:  "MESSAGE_TYPE_UNSPECIFIED",
 		51: "MESSAGE_TYPE_HEARTBEAT",
+		91: "MESSAGE_TYPE_PING",
+		92: "MESSAGE_TYPE_DATA_STREAM",
 	}
 	Chunkserver_MessageType_value = map[string]int32{
 		"MESSAGE_TYPE_UNSPECIFIED": 0,
 		"MESSAGE_TYPE_HEARTBEAT":   51,
+		"MESSAGE_TYPE_PING":        91,
+		"MESSAGE_TYPE_DATA_STREAM": 92,
 	}
 )
 
@@ -226,11 +233,72 @@ func (x *Chunkserver_Heartbeat) GetChunks() []*Chunkserver_ChunkInfo {
 	return nil
 }
 
+// client messages
+type Chunkserver_StreamFailed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SeqId         uint32                 `protobuf:"varint,1,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
+	ChunkId       uint64                 `protobuf:"varint,2,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_StreamFailed) Reset() {
+	*x = Chunkserver_StreamFailed{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_StreamFailed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_StreamFailed) ProtoMessage() {}
+
+func (x *Chunkserver_StreamFailed) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_StreamFailed.ProtoReflect.Descriptor instead.
+func (*Chunkserver_StreamFailed) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 2}
+}
+
+func (x *Chunkserver_StreamFailed) GetSeqId() uint32 {
+	if x != nil {
+		return x.SeqId
+	}
+	return 0
+}
+
+func (x *Chunkserver_StreamFailed) GetChunkId() uint64 {
+	if x != nil {
+		return x.ChunkId
+	}
+	return 0
+}
+
+func (x *Chunkserver_StreamFailed) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_gfs_v1_chunkserver_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\n" +
-	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\"\xa5\x02\n" +
+	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\"\xb2\x03\n" +
 	"\vChunkserver\x1aX\n" +
 	"\tChunkInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
@@ -239,10 +307,16 @@ const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\tHeartbeat\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x1b\n" +
 	"\tdisk_util\x18\x02 \x01(\rR\bdiskUtil\x125\n" +
-	"\x06chunks\x18\x03 \x03(\v2\x1d.gfs.v1.Chunkserver.ChunkInfoR\x06chunks\"G\n" +
+	"\x06chunks\x18\x03 \x03(\v2\x1d.gfs.v1.Chunkserver.ChunkInfoR\x06chunks\x1aV\n" +
+	"\fStreamFailed\x12\x15\n" +
+	"\x06seq_id\x18\x01 \x01(\rR\x05seqId\x12\x19\n" +
+	"\bchunk_id\x18\x02 \x01(\x04R\achunkId\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"|\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16MESSAGE_TYPE_HEARTBEAT\x103B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x16MESSAGE_TYPE_HEARTBEAT\x103\x12\x15\n" +
+	"\x11MESSAGE_TYPE_PING\x10[\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_DATA_STREAM\x10\\B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_chunkserver_proto_rawDescOnce sync.Once
@@ -257,12 +331,13 @@ func file_gfs_v1_chunkserver_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_chunkserver_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_gfs_v1_chunkserver_proto_goTypes = []any{
-	(Chunkserver_MessageType)(0),  // 0: gfs.v1.Chunkserver.MessageType
-	(*Chunkserver)(nil),           // 1: gfs.v1.Chunkserver
-	(*Chunkserver_ChunkInfo)(nil), // 2: gfs.v1.Chunkserver.ChunkInfo
-	(*Chunkserver_Heartbeat)(nil), // 3: gfs.v1.Chunkserver.Heartbeat
+	(Chunkserver_MessageType)(0),     // 0: gfs.v1.Chunkserver.MessageType
+	(*Chunkserver)(nil),              // 1: gfs.v1.Chunkserver
+	(*Chunkserver_ChunkInfo)(nil),    // 2: gfs.v1.Chunkserver.ChunkInfo
+	(*Chunkserver_Heartbeat)(nil),    // 3: gfs.v1.Chunkserver.Heartbeat
+	(*Chunkserver_StreamFailed)(nil), // 4: gfs.v1.Chunkserver.StreamFailed
 }
 var file_gfs_v1_chunkserver_proto_depIdxs = []int32{
 	2, // 0: gfs.v1.Chunkserver.Heartbeat.chunks:type_name -> gfs.v1.Chunkserver.ChunkInfo
@@ -284,7 +359,7 @@ func file_gfs_v1_chunkserver_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_chunkserver_proto_rawDesc), len(file_gfs_v1_chunkserver_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

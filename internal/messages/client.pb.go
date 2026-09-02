@@ -33,19 +33,24 @@ const (
 	Client_MESSAGE_TYPE_MOVE           Client_MessageType = 6
 	Client_MESSAGE_TYPE_LIST           Client_MessageType = 7
 	Client_MESSAGE_TYPE_DELETE         Client_MessageType = 8
+	// chunkserver message types
+	Client_MESSAGE_TYPE_DATA_STREAM  Client_MessageType = 26
+	Client_MESSAGE_TYPE_COMMIT_WRITE Client_MessageType = 27
 )
 
 // Enum value maps for Client_MessageType.
 var (
 	Client_MessageType_name = map[int32]string{
-		0: "MESSAGE_TYPE_UNSPECIFIED",
-		1: "MESSAGE_TYPE_READ_FILE",
-		2: "MESSAGE_TYPE_CREATE_FILE",
-		3: "MESSAGE_TYPE_CHUNK_REPLICAS",
-		5: "MESSAGE_TYPE_SNAPSHOT",
-		6: "MESSAGE_TYPE_MOVE",
-		7: "MESSAGE_TYPE_LIST",
-		8: "MESSAGE_TYPE_DELETE",
+		0:  "MESSAGE_TYPE_UNSPECIFIED",
+		1:  "MESSAGE_TYPE_READ_FILE",
+		2:  "MESSAGE_TYPE_CREATE_FILE",
+		3:  "MESSAGE_TYPE_CHUNK_REPLICAS",
+		5:  "MESSAGE_TYPE_SNAPSHOT",
+		6:  "MESSAGE_TYPE_MOVE",
+		7:  "MESSAGE_TYPE_LIST",
+		8:  "MESSAGE_TYPE_DELETE",
+		26: "MESSAGE_TYPE_DATA_STREAM",
+		27: "MESSAGE_TYPE_COMMIT_WRITE",
 	}
 	Client_MessageType_value = map[string]int32{
 		"MESSAGE_TYPE_UNSPECIFIED":    0,
@@ -56,6 +61,8 @@ var (
 		"MESSAGE_TYPE_MOVE":           6,
 		"MESSAGE_TYPE_LIST":           7,
 		"MESSAGE_TYPE_DELETE":         8,
+		"MESSAGE_TYPE_DATA_STREAM":    26,
+		"MESSAGE_TYPE_COMMIT_WRITE":   27,
 	}
 )
 
@@ -480,11 +487,80 @@ func (x *Client_Delete) GetPath() string {
 	return ""
 }
 
+// chunkserver messages
+type Client_StreamHeader struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	SeqId            uint32                 `protobuf:"varint,1,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
+	ChunkId          uint64                 `protobuf:"varint,2,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
+	ClientListenAddr string                 `protobuf:"bytes,3,opt,name=client_listen_addr,json=clientListenAddr,proto3" json:"client_listen_addr,omitempty"`
+	Locations        []string               `protobuf:"bytes,4,rep,name=locations,proto3" json:"locations,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *Client_StreamHeader) Reset() {
+	*x = Client_StreamHeader{}
+	mi := &file_gfs_v1_client_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Client_StreamHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Client_StreamHeader) ProtoMessage() {}
+
+func (x *Client_StreamHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_client_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Client_StreamHeader.ProtoReflect.Descriptor instead.
+func (*Client_StreamHeader) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_client_proto_rawDescGZIP(), []int{0, 7}
+}
+
+func (x *Client_StreamHeader) GetSeqId() uint32 {
+	if x != nil {
+		return x.SeqId
+	}
+	return 0
+}
+
+func (x *Client_StreamHeader) GetChunkId() uint64 {
+	if x != nil {
+		return x.ChunkId
+	}
+	return 0
+}
+
+func (x *Client_StreamHeader) GetClientListenAddr() string {
+	if x != nil {
+		return x.ClientListenAddr
+	}
+	return ""
+}
+
+func (x *Client_StreamHeader) GetLocations() []string {
+	if x != nil {
+		return x.Locations
+	}
+	return nil
+}
+
 var File_gfs_v1_client_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_client_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/client.proto\x12\x06gfs.v1\"\xd3\x04\n" +
+	"\x13gfs/v1/client.proto\x12\x06gfs.v1\"\x9f\x06\n" +
 	"\x06Client\x1aB\n" +
 	"\x04Read\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x10\n" +
@@ -507,7 +583,12 @@ const file_gfs_v1_client_proto_rawDesc = "" +
 	"\x04List\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x1a\x1c\n" +
 	"\x06Delete\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04path\"\xe8\x01\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x1a\x8c\x01\n" +
+	"\fStreamHeader\x12\x15\n" +
+	"\x06seq_id\x18\x01 \x01(\rR\x05seqId\x12\x19\n" +
+	"\bchunk_id\x18\x02 \x01(\x04R\achunkId\x12,\n" +
+	"\x12client_listen_addr\x18\x03 \x01(\tR\x10clientListenAddr\x12\x1c\n" +
+	"\tlocations\x18\x04 \x03(\tR\tlocations\"\xa5\x02\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16MESSAGE_TYPE_READ_FILE\x10\x01\x12\x1c\n" +
@@ -516,7 +597,9 @@ const file_gfs_v1_client_proto_rawDesc = "" +
 	"\x15MESSAGE_TYPE_SNAPSHOT\x10\x05\x12\x15\n" +
 	"\x11MESSAGE_TYPE_MOVE\x10\x06\x12\x15\n" +
 	"\x11MESSAGE_TYPE_LIST\x10\a\x12\x17\n" +
-	"\x13MESSAGE_TYPE_DELETE\x10\bB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x13MESSAGE_TYPE_DELETE\x10\b\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_DATA_STREAM\x10\x1a\x12\x1d\n" +
+	"\x19MESSAGE_TYPE_COMMIT_WRITE\x10\x1bB8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_client_proto_rawDescOnce sync.Once
@@ -531,7 +614,7 @@ func file_gfs_v1_client_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_client_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_client_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_gfs_v1_client_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_gfs_v1_client_proto_goTypes = []any{
 	(Client_MessageType)(0),         // 0: gfs.v1.Client.MessageType
 	(*Client)(nil),                  // 1: gfs.v1.Client
@@ -542,6 +625,7 @@ var file_gfs_v1_client_proto_goTypes = []any{
 	(*Client_Move)(nil),             // 6: gfs.v1.Client.Move
 	(*Client_List)(nil),             // 7: gfs.v1.Client.List
 	(*Client_Delete)(nil),           // 8: gfs.v1.Client.Delete
+	(*Client_StreamHeader)(nil),     // 9: gfs.v1.Client.StreamHeader
 }
 var file_gfs_v1_client_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -562,7 +646,7 @@ func file_gfs_v1_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_client_proto_rawDesc), len(file_gfs_v1_client_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -19,6 +19,8 @@ message Client {
     MESSAGE_TYPE_DELETE = 8;
 
     // chunkserver message types
+    MESSAGE_TYPE_DATA_STREAM = 26;
+    MESSAGE_TYPE_COMMIT_WRITE = 27;
   }
 
   // master messages
@@ -54,5 +56,13 @@ message Client {
 
   message Delete {
     string path = 1;
+  }
+
+  // chunkserver messages
+  message StreamHeader {
+    uint32 seq_id = 1;
+    uint64 chunk_id = 2;
+    string client_listen_addr = 3;
+    repeated string locations = 4;
   }
 }

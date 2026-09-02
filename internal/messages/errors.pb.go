@@ -71,10 +71,14 @@ type Error_Code int32
 
 const (
 	Error_CODE_UNSPECIFIED Error_Code = 0
-	// shared 151 - 200
+	// shared 151 - 160
 	Error_CODE_UNMARSHAL_FAILED Error_Code = 151
-	// client 1 - 50
-	Error_CODE_OP_FAILED Error_Code = 1
+	Error_CODE_OP_FAILED        Error_Code = 152
+	// chunkserver
+	Error_CODE_CHUNKSERVER_BUSY              Error_Code = 153
+	Error_CODE_CHUNKSERVER_STREAM_FAILED     Error_Code = 154
+	Error_CODE_CHUNKSERVER_CHUNK_UNAVAILABLE Error_Code = 155
+	Error_CODE_CHUNKSERVER_LEASE_UNAVAILABLE Error_Code = 156
 )
 
 // Enum value maps for Error_Code.
@@ -82,12 +86,20 @@ var (
 	Error_Code_name = map[int32]string{
 		0:   "CODE_UNSPECIFIED",
 		151: "CODE_UNMARSHAL_FAILED",
-		1:   "CODE_OP_FAILED",
+		152: "CODE_OP_FAILED",
+		153: "CODE_CHUNKSERVER_BUSY",
+		154: "CODE_CHUNKSERVER_STREAM_FAILED",
+		155: "CODE_CHUNKSERVER_CHUNK_UNAVAILABLE",
+		156: "CODE_CHUNKSERVER_LEASE_UNAVAILABLE",
 	}
 	Error_Code_value = map[string]int32{
-		"CODE_UNSPECIFIED":      0,
-		"CODE_UNMARSHAL_FAILED": 151,
-		"CODE_OP_FAILED":        1,
+		"CODE_UNSPECIFIED":                   0,
+		"CODE_UNMARSHAL_FAILED":              151,
+		"CODE_OP_FAILED":                     152,
+		"CODE_CHUNKSERVER_BUSY":              153,
+		"CODE_CHUNKSERVER_STREAM_FAILED":     154,
+		"CODE_CHUNKSERVER_CHUNK_UNAVAILABLE": 155,
+		"CODE_CHUNKSERVER_LEASE_UNAVAILABLE": 156,
 	}
 )
 
@@ -174,17 +186,21 @@ var File_gfs_v1_errors_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_errors_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/errors.proto\x12\x06gfs.v1\"\xdd\x01\n" +
+	"\x13gfs/v1/errors.proto\x12\x06gfs.v1\"\xf2\x02\n" +
 	"\x05Error\x12&\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x12.gfs.v1.Error.CodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"D\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
-	"\x12MESSAGE_TYPE_ERROR\x10\xc7\x01\"L\n" +
+	"\x12MESSAGE_TYPE_ERROR\x10\xc7\x01\"\xe0\x01\n" +
 	"\x04Code\x12\x14\n" +
 	"\x10CODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x15CODE_UNMARSHAL_FAILED\x10\x97\x01\x12\x12\n" +
-	"\x0eCODE_OP_FAILED\x10\x01B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x15CODE_UNMARSHAL_FAILED\x10\x97\x01\x12\x13\n" +
+	"\x0eCODE_OP_FAILED\x10\x98\x01\x12\x1a\n" +
+	"\x15CODE_CHUNKSERVER_BUSY\x10\x99\x01\x12#\n" +
+	"\x1eCODE_CHUNKSERVER_STREAM_FAILED\x10\x9a\x01\x12'\n" +
+	"\"CODE_CHUNKSERVER_CHUNK_UNAVAILABLE\x10\x9b\x01\x12'\n" +
+	"\"CODE_CHUNKSERVER_LEASE_UNAVAILABLE\x10\x9c\x01B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_errors_proto_rawDescOnce sync.Once

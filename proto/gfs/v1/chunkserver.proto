@@ -13,6 +13,10 @@ message Chunkserver {
     MESSAGE_TYPE_HEARTBEAT = 51;
 
     // client message types
+
+    // chunkserver message types
+    MESSAGE_TYPE_PING = 91;
+    MESSAGE_TYPE_DATA_STREAM = 92;
   }
 
   // master messages
@@ -29,4 +33,9 @@ message Chunkserver {
   }
 
   // client messages
+  message StreamFailed {
+  	uint32 seq_id = 1;
+   	uint64 chunk_id = 2;
+    string error = 3;
+  }
 }
