@@ -17,6 +17,7 @@ message Chunkserver {
     // chunkserver message types
     MESSAGE_TYPE_PING = 91;
     MESSAGE_TYPE_DATA_STREAM = 92;
+    MESSAGE_TYPE_REPLICATE_CHUNK = 93;
   }
 
   // master messages
