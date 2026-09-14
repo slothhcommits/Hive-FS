@@ -216,7 +216,7 @@ func newPersistentState() *persistentState {
 
 	return &persistentState{
 
-		namespace:  newNamesapce(),
+		namespace:  newNamespace(),
 		chunkTable: newChunkTable(),
 
 		crc32Table: crc32.MakeTable(crc32.Castagnoli),

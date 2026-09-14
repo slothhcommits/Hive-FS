@@ -170,12 +170,6 @@ func (checksums *checksums) flush() error {
 	return file.Sync()
 }
 
-//	1  2  3  4
-//
-// checksum table : 0  1  2  3
-//
-//	64 64 64 64
-//	0  65 129
 func newChecksums(handle uint64) (*checksums, error) {
 
 	path := makeChecksumPath(handle)
@@ -255,9 +249,6 @@ func loadChecksums(handle uint64) (*checksums, error) {
 	}
 
 	return checksums, nil
-}
-
-type opLog struct {
 }
 
 type persistentState struct {

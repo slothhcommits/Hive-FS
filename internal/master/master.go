@@ -133,11 +133,15 @@ func (m *master) requestRouter(req hive.Request) {
 
 }
 
-func (m *master) sendRequest(addr string, msg *hive.Message, timeout time.Duration) (*hive.Message, error) {
+func (m *master) sendRequest(ctx context.Context, addr string, msg *hive.Message) (*hive.Message, error) {
 
 	peer, err := m.transport.Dial(addr)
 	if err != nil {
 		return nil, err
+	}
+
+	if ctx == nil {
+		return nil, peer.Send(msg)
 	}
 
 	ch, err := peer.Request(msg)
@@ -148,10 +152,12 @@ func (m *master) sendRequest(addr string, msg *hive.Message, timeout time.Durati
 	var res *hive.Message
 
 	select {
-	case res = <-ch:
-	case <-time.After(timeout):
+
+	case <-ctx.Done():
 		peer.Unregister(msg)
-		return nil, internal.ErrRequestTimeout
+		return nil, ctx.Err()
+
+	case res = <-ch:
 	}
 
 	return res, nil
@@ -303,14 +309,6 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 		panic(err)
 	}
 
-	msg := &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK),
-			Size: uint32(len(payload)),
-		},
-	}
-
 	m.chunkTable.stagedCreateMu.Lock()
 	m.chunkTable.stagedCreate[newChunk.id] = struct{}{}
 	m.chunkTable.stagedCreateMu.Unlock()
@@ -322,7 +320,17 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 		wg.Add(1)
 		go func(loc string) {
 			defer wg.Done()
-			ack, err := m.sendRequest(loc, msg, copyAckTimeout)
+			msg := hive.Message{
+				Payload: payload,
+				Metadata: hive.Metadata{
+					Type: uint8(messages.Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK),
+					Size: uint32(len(payload)),
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), copyAckTimeout)
+			defer cancel()
+
+			ack, err := m.sendRequest(ctx, loc, &msg)
 			if err == nil {
 
 				res := &messages.Ack{}
@@ -490,39 +498,39 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 	primaryChunkMap := make(map[string][]uint64)
 
 	chunkLocks := []*sync.Mutex{}
-	chunkSet := make(map[uint64]struct{})
+	chunkSet := make(map[uint64]uint32)
 
-	m.chunkTable.mu.RLock()
-
-	handles := []uint64{}
 	for _, node := range nodes {
 		if !node.dir {
 			for _, handle := range node.chunkHandles {
-				handles = append(handles, handle)
+				chunkSet[handle]++
 			}
 		}
 	}
 
-	slices.Sort(handles)
+	m.chunkTable.mu.RLock()
 
 	chunks := []*chunk{}
-	for _, handle := range handles {
-		if _, ok := chunkSet[handle]; !ok {
-			if chunk, ok := m.chunkTable.entries[handle]; ok {
-				chunks = append(chunks, chunk)
-				chunkSet[handle] = struct{}{}
-			}
+
+	for handle, _ := range chunkSet {
+		if c, ok := m.chunkTable.entries[handle]; ok {
+			chunks = append(chunks, c)
 		}
 	}
 
 	m.chunkTable.mu.RUnlock()
 
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].id < chunks[j].id
+	})
+
 	for _, chunk := range chunks {
+
 		chunk.Lock()
 		if time.Since(chunk.leaseGrantTime) < leaseDeadline {
 			primaryChunkMap[chunk.primary] = append(primaryChunkMap[chunk.primary], chunk.id)
 		}
-		chunk.updateRef(tx, chunk.ref+1)
+		chunk.updateRef(tx, chunk.ref+chunkSet[chunk.id])
 		chunkLocks = append(chunkLocks, &chunk.Mutex)
 	}
 
@@ -565,30 +573,32 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 
 }
 
-func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]string, error) {
+func (m *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
 
 	payload, err := proto.Marshal(&messages.Master_UpdateVersion{
-		Id:      chunkID,
-		Version: v,
+		Id:      chunk.id,
+		Version: chunk.version+1,
 	})
-	
+
 	if err != nil {
 		panic(fmt.Errorf("update marshal error : %s", err.Error()))
 	}
 
 	wg := sync.WaitGroup{}
 
-	var acked []string
+	acked := make(map[string]time.Time)
 	ackedCh := make(chan string)
 	done := make(chan struct{})
 
 	go func() {
 		for server := range ackedCh {
-			acked = append(acked, server)
+			acked[server] = time.Now()
 		}
 		close(done)
 	}()
 
+	servers := chunk.getLocations(nil)
+	
 	for _, server := range servers {
 
 		msg := &hive.Message{
@@ -603,8 +613,11 @@ func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]st
 		go func(server string, msg *hive.Message) {
 			defer wg.Done()
 
-			ackMsg, err := m.sendRequest(server, msg, versionAckTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), versionAckTimeout)
+			defer cancel()
 
+			ackMsg, err := m.sendRequest(ctx, server, msg)
+			
 			if err == nil && ackMsg.Type == uint8(messages.MessageType_ACK) {
 
 				ack := &messages.Ack{}
@@ -614,9 +627,8 @@ func (m *master) updateVersion(chunkID uint64, v uint32, servers []string) ([]st
 				if err == nil && ack.Success {
 					ackedCh <- server
 				}
-
 			}
-
+			
 		}(server, msg)
 	}
 
@@ -640,26 +652,28 @@ func (m *master) grantLease(c *chunk) error {
 		panic(fmt.Errorf("grant lease : %s", err.Error()))
 	}
 
-	locations := c.getLocations(nil)
+	// locations := c.getLocations(nil)
 
-	acked, err := m.updateVersion(c.id, c.version+1, locations)
+	acked, err := m.updateVersion(c)
 	if err != nil {
 		return err
 	}
 
-	msg := &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_TAKE_LEASE),
-			Size: uint32(len(payload)),
-		},
-	}
-
 	// TODO: Think about what happens to acked chunks in chunkservers if lease grant fails
-	var primary string
-	for _, addr := range acked {
+	var primary struct{ addr string ; time time.Time}
+	for addr, _ := range acked {
 
-		ackMsg, err := m.sendRequest(addr, msg, grantLeaseTimeout)
+		msg := &hive.Message{
+			Payload: payload,
+			Metadata: hive.Metadata{
+				Type: uint8(messages.Master_MESSAGE_TYPE_TAKE_LEASE),
+				Size: uint32(len(payload)),
+			},
+		}
+		
+		ctx, cancel := context.WithTimeout(context.Background(), grantLeaseTimeout)
+		ackMsg, err := m.sendRequest(ctx, addr, msg)
+		cancel()
 		if err == nil && ackMsg.Type == uint8(messages.MessageType_ACK) {
 
 			ack := &messages.Ack{}
@@ -667,22 +681,34 @@ func (m *master) grantLease(c *chunk) error {
 			err = proto.Unmarshal(ackMsg.Payload, ack)
 
 			if err == nil && ack.Success {
-				primary = addr
+				primary = struct{addr string; time time.Time}{ addr: addr , time: time.Now() }
 				break
 			}
 
 		}
 	}
 
-	if len(primary) == 0 {
+	
+	if len(primary.addr) == 0 {
 		return internal.ErrOpFailed
 	}
 
-	c.primary = primary
-	c.leaseGrantTime = time.Now()
+	c.primary = primary.addr
+	c.leaseGrantTime = primary.time
 
-	for _, server := range acked {
-		c.locations[server] = time.Now()
+	for addr, _ := range c.locations {
+
+		if _, ok := acked[addr]; !ok { 
+			delete(c.locations, addr)
+			continue
+		}
+		
+		if addr == primary.addr {
+			c.locations[primary.addr] = primary.time
+			continue
+		}
+
+		c.locations[addr] = acked[addr]
 	}
 
 	return nil
@@ -707,8 +733,11 @@ func (m *master) revokeLease(primary string, handles []uint64) {
 		},
 	}
 
-	_, err = m.sendRequest(primary, msg, leaseDeadline)
-	if err != nil && !errors.Is(err, internal.ErrRequestTimeout) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaseDeadline)
+	defer cancel()
+
+	_, err = m.sendRequest(ctx, primary, msg)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		time.Sleep(leaseDeadline)
 	}
 }
@@ -793,6 +822,7 @@ func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
 	tx := &transaction{}
 	err = m.namespace.delete(tx, req.Path)
 	if err != nil {
+		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
 
@@ -1107,7 +1137,7 @@ func (m *master) reReplicate() {
 						},
 					}
 
-					m.sendRequest(addr, msg, 0)
+					m.sendRequest(nil, addr, msg)
 
 					m.chunkTable.mu.RLock()
 					chunk, ok := m.chunkTable.entries[o.handle]
@@ -1171,7 +1201,7 @@ func (m *master) reReplicate() {
 							},
 						}
 
-						m.sendRequest(server, msg, 0)
+						m.sendRequest(nil, server, msg)
 
 						m.chunkTable.repRequestsMu.Lock()
 						if _, ok := m.chunkTable.repRequests[s.handle]; !ok {
@@ -1195,4 +1225,3 @@ func (m *master) reReplicate() {
 		}
 	}
 }
-

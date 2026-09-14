@@ -68,7 +68,7 @@ func MakeErrMessage(code uint8, err error) *hive.Message {
 	}
 }
 
-var ErrRequestTimeout = errors.New("request timedout")
+var ErrRequestTimeout = errors.New("request timed out")
 var ErrUnavailable = errors.New("unavailable")
 var ErrOpFailed = errors.New("operation failed")
 var ErrProtoUnmarshal = errors.New("proto unmarshal error")

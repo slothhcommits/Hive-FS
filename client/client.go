@@ -7,7 +7,6 @@ import (
 
 	"github.com/PraveenC2002/gfs/internal"
 	"github.com/PraveenC2002/gfs/internal/hive"
-	"github.com/PraveenC2002/gfs/internal/messages"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -27,7 +26,6 @@ const (
 const (
 	masterAddr     string = ""
 	requestTimeout        = 30 * time.Second
-	getReplicas    uint8  = 1
 )
 
 var transport = hive.NewTCPTransport()
@@ -98,23 +96,23 @@ func Write(path string, offset uint32, d *Data) error {
 
 func writeChunk(path string, chunkIdx uint32, cursor uint32, r *internal.ChunkReader) error {
 
-	res, err := request(
-		masterAddr,
-		&hive.Metadata{Type: getReplicas},
-		&messages.Client_GetChunkReplicas{
-			Path:     path,
-			ChunkIdx: chunkIdx,
-		},
-		requestTimeout,
-	)
-	if err != nil {
-		return err
-	}
+	// res, err := request(
+	// 	masterAddr,
+	// 	&hive.Metadata{Type: },
+	// 	&messages.Client_GetChunkReplicas{
+	// 		Path:     path,
+	// 		ChunkIdx: chunkIdx,
+	// 	},
+	// 	requestTimeout,
+	// )
+	// if err != nil {
+	// 	return err
+	// }
 
-	var data proto.Message
-	if err := proto.Unmarshal(res.Payload, data); err != nil {
-		return err
-	}
+	// var data proto.Message
+	// if err := proto.Unmarshal(res.Payload, data); err != nil {
+	// 	return err
+	// }
 
 	return nil
 }

@@ -20,7 +20,7 @@ func getChunkHandle() uint64 {
 
 const (
 	defaultRepFactor   uint32        = 3
-	chunkSeverDeadline time.Duration = 90 * time.Second
+	chunkServerDeadline time.Duration = 90 * time.Second
 	leaseDeadline      time.Duration = 60 * time.Second
 )
 
@@ -56,7 +56,7 @@ func (c *chunk) getLocations(exclude []string) []string {
 
 	for loc, t := range c.locations {
 		if _, ok := excludeSet[loc]; !ok {
-			if t.IsZero() || time.Since(t) < chunkSeverDeadline {
+			if t.IsZero() || time.Since(t) < chunkServerDeadline {
 				locations = append(locations, loc)
 			} else {
 				delete(c.locations, loc)
@@ -213,7 +213,7 @@ func (ct *chunkTable) processHeartbeat(hb *messages.Chunkserver_Heartbeat) *mess
 			}
 
 			for loc, t := range chunk.locations {
-				if !t.IsZero() && time.Since(t) > chunkSeverDeadline {
+				if !t.IsZero() && time.Since(t) > chunkServerDeadline {
 					delete(chunk.locations, loc)
 				}
 			}
@@ -252,7 +252,7 @@ func (csr *chunkServerRegistry) prune() {
 
 	csr.mu.Lock()
 	for addr, server := range csr.entries {
-		if time.Since(server.lastBeat) > chunkSeverDeadline {
+		if time.Since(server.lastBeat) > chunkServerDeadline {
 			delete(csr.entries, addr)
 		}
 	}
@@ -291,7 +291,7 @@ func (csr *chunkServerRegistry) getServers(n uint32, excludeList []string) ([]st
 		if _, ok := excludeSet[cs.state.Addr]; ok {
 			continue
 		}
-		if time.Since(cs.lastBeat) < chunkSeverDeadline {
+		if time.Since(cs.lastBeat) < chunkServerDeadline {
 			servers = append(servers, struct {
 				addr     string
 				diskUtil uint32

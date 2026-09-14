@@ -183,6 +183,7 @@ const (
 type TCPTransport struct {
 	obMu          sync.Mutex
 	outboundPeers map[string]*OutboundPeer
+	listening     bool
 
 	Messages  chan Request
 	StreamsCh chan *Stream
@@ -190,18 +191,50 @@ type TCPTransport struct {
 	wg        sync.WaitGroup
 	closeDone sync.Once
 	shutdown  chan struct{}
+
+	// closed by the accept loop when it stops
+	listenerExited chan struct{}
 }
 
 func NewTCPTransport() *TCPTransport {
-	return &TCPTransport{
-		outboundPeers: make(map[string]*OutboundPeer),
-		Messages:      make(chan Request, 128),
-		StreamsCh:     make(chan *Stream, 16),
-		shutdown:      make(chan struct{}),
+
+	t := &TCPTransport{
+		outboundPeers:  make(map[string]*OutboundPeer),
+		Messages:       make(chan Request, 128),
+		StreamsCh:      make(chan *Stream, 16),
+		shutdown:       make(chan struct{}),
+		listenerExited: make(chan struct{}),
 	}
+
+	// A base reference, released by Close. Readers are only ever added while
+	// this is held, so the counter never climbs away from zero anywhere except
+	// here, in the goroutine that built the transport. Without it the first
+	// Add happens inside the accept loop with nothing ordering it against
+	// Close's Wait.
+	t.wg.Add(1)
+
+	return t
 }
 
 func (t *TCPTransport) ListenAndAccept(addr string) error {
+
+	t.obMu.Lock()
+	select {
+	case <-t.shutdown:
+		t.obMu.Unlock()
+		return &ErrConnClosed{}
+	default:
+	}
+	if t.listening {
+		t.obMu.Unlock()
+		return errors.New("already listening")
+	}
+	t.listening = true
+	t.obMu.Unlock()
+
+	// Close waits for this before releasing the base reference, so no reader
+	// can be spawned after the counter reaches zero.
+	defer close(t.listenerExited)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -322,6 +355,12 @@ func (t *TCPTransport) Dial(addr string) (Peer, error) {
 	t.obMu.Lock()
 	defer t.obMu.Unlock()
 
+	select {
+	case <-t.shutdown:
+		return nil, &ErrConnClosed{}
+	default:
+	}
+
 	if peer, ok := t.outboundPeers[key]; ok {
 		return peer, nil
 	}
@@ -423,22 +462,33 @@ func (t *TCPTransport) Streams() <-chan *Stream {
 
 func (t *TCPTransport) Close() error {
 
-	t.closeDone.Do(func() { close(t.shutdown) })
-
 	var err error
 
-	t.obMu.Lock()
-	for key, obp := range t.outboundPeers {
-		if cerr := obp.Close(); cerr != nil && err == nil {
-			err = cerr
-		}
-		delete(t.outboundPeers, key)
-	}
-	t.obMu.Unlock()
+	t.closeDone.Do(func() {
 
-	t.wg.Wait()
-	close(t.Messages)
-	close(t.StreamsCh)
+		close(t.shutdown)
+
+		t.obMu.Lock()
+		listening := t.listening
+		for key, obp := range t.outboundPeers {
+			if cerr := obp.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+			delete(t.outboundPeers, key)
+		}
+		t.obMu.Unlock()
+
+		// the accept loop must be gone before the base reference is dropped
+		if listening {
+			<-t.listenerExited
+		}
+
+		t.wg.Done()
+		t.wg.Wait()
+
+		close(t.Messages)
+		close(t.StreamsCh)
+	})
 
 	return err
 }

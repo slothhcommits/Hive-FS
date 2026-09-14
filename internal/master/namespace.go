@@ -90,7 +90,7 @@ type namespace struct {
 	deleted   map[string]*deletedNode
 }
 
-func newNamesapce() *namespace {
+func newNamespace() *namespace {
 	return &namespace{
 		lm:      newLockManager(),
 		mu:      sync.RWMutex{},
@@ -222,14 +222,6 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 		} else {
 			l.Lock()
 		}
-
-		// TODO: look out for transaction rollback
-		// if !req.noOp {
-		// 	if err := req.op(req.path); err != nil {
-		// 		release(lockReqs[:i+1])
-		// 		return nil, err
-		// 	}
-		// }
 	}
 
 	return func() {
@@ -237,7 +229,7 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 	}, nil
 }
 
-func (ns *namespace) mkdirP(tx *transaction, path string) error {
+func (ns *namespace) mkdir(tx *transaction, path string) error {
 
 	ns.mu.RLock()
 	f, ok := ns.entries[path]
@@ -279,7 +271,7 @@ func (ns *namespace) create(tx *transaction, path string) error {
 	tx.addRB(unlock)
 
 	for _, req := range lockReqs[:len(lockReqs)-1] {
-		if err := ns.mkdirP(tx, req.path); err != nil {
+		if err := ns.mkdir(tx, req.path); err != nil {
 			return err
 		}
 	}
@@ -311,7 +303,7 @@ func (ns *namespace) create(tx *transaction, path string) error {
 	return nil
 }
 
-func (ns *namespace) checkAncestor(path string) error {
+func (ns *namespace) isDir(path string) error {
 	ns.mu.RLock()
 	node, ok := ns.entries[path]
 	ns.mu.RUnlock()
@@ -398,8 +390,17 @@ func (ns *namespace) prefixScan(prefix string) []string {
 func (ns *namespace) moveNodes(tx *transaction, list []*struct {
 	src string
 	dst string
-}) {
+}) error {
 
+	ns.mu.RLock()
+	for _, ele := range list {
+		if _, ok := ns.entries[ele.dst]; ok {
+			ns.mu.RUnlock()
+			return &ErrInvalidPath{}
+		}
+	}
+	ns.mu.RUnlock()
+	
 	for _, ele := range list {
 		tx.addOp(&operation{
 			t:    MOVE,
@@ -416,6 +417,8 @@ func (ns *namespace) moveNodes(tx *transaction, list []*struct {
 		}
 		ns.mu.Unlock()
 	})
+
+	return nil
 }
 
 func (ns *namespace) move(tx *transaction, src, dst string) error {
@@ -448,14 +451,14 @@ func (ns *namespace) move(tx *transaction, src, dst string) error {
 
 	dstSet = ns.expand(dstSet)
 
-	for _, ele := range srcSet[:len(src)-1] {
-		if err := ns.checkAncestor(ele.path); err != nil {
+	for _, ele := range srcSet[:len(srcSet)-1] {
+		if err := ns.isDir(ele.path); err != nil {
 			return err
 		}
 	}
 
 	for _, ele := range dstSet {
-		if err := ns.mkdirP(tx, ele.path); err != nil {
+		if err := ns.mkdir(tx, ele.path); err != nil {
 			return err
 		}
 	}
@@ -484,18 +487,22 @@ func (ns *namespace) move(tx *transaction, src, dst string) error {
 
 	case !srcNode.dir && !dstNode.dir:
 
-		ns.moveNodes(tx, []*struct {
+		if err := ns.moveNodes(tx, []*struct {
 			src string
 			dst string
-		}{{src: src, dst: dst}})
+		}{{src: src, dst: dst}}); err != nil {
+			return err
+		}
 
 	case !srcNode.dir && dstNode.dir:
 
 		newPath := dst + "/" + src[strings.LastIndex(src, "/")+1:]
-		ns.moveNodes(tx, []*struct {
+		if err := ns.moveNodes(tx, []*struct {
 			src string
 			dst string
-		}{{src: src, dst: newPath}})
+		}{{src: src, dst: newPath}}); err != nil {
+			return err
+		}
 
 	case srcNode.dir && dstNode.dir:
 
@@ -520,7 +527,7 @@ func (ns *namespace) move(tx *transaction, src, dst string) error {
 			}{src: path, dst: newPrefix + strings.TrimPrefix(path, src)})
 		}
 
-		ns.moveNodes(tx, list)
+		if err := ns.moveNodes(tx, list); err != nil { return err }
 	}
 
 	tx.addFunc(unlock)
@@ -543,8 +550,6 @@ func (ns *namespace) snapshotNodes(tx *transaction, list []*struct {
 	tx.addFunc(func() {
 		ns.mu.Lock()
 		for _, ele := range list {
-			// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
-			// TODO: copy any metadata or node slices explicitly to avoid shallow copy
 			srcNode := ns.entries[ele.src]
 			srcNode.RLock()
 			ns.entries[ele.dst] = &node{
@@ -583,7 +588,7 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error)
 	for _, req := range lockReqs {
 
 		if req.path != src && req.path != dst {
-			if err := ns.checkAncestor(req.path); err != nil {
+			if err := ns.isDir(req.path); err != nil {
 				return nil, err
 			}
 		}
@@ -613,8 +618,6 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error)
 
 	case !srcNode.dir:
 
-		// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
-		// TODO: copy any metadata or node slices explicitly to avoid shallow copy
 		ns.snapshotNodes(tx, []*struct {
 			src string
 			dst string
@@ -626,8 +629,6 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error)
 
 	case srcNode.dir:
 
-		// TODO: Bump ref counts on chunk handles (ONCE! or double counting failure)
-		// TODO: copy any metadata or node slices explicitly to avoid shallow copy
 
 		contents := ns.prefixScan(src)
 
@@ -667,7 +668,7 @@ func (ns *namespace) list(path string) ([]string, error) {
 	defer unlock()
 
 	for _, req := range lockReqs[:len(lockReqs)-1] {
-		if err := ns.checkAncestor(req.path); err != nil {
+		if err := ns.isDir(req.path); err != nil {
 			return nil, err
 		}
 	}
@@ -689,6 +690,10 @@ func (ns *namespace) list(path string) ([]string, error) {
 
 func (ns *namespace) delete(tx *transaction, path string) error {
 
+    if !ns.validatePath(path) {
+        return &ErrInvalidPath{}
+    }
+
 	lockReqs := []*lockReq{{path: path, read: false}}
 
 	lockReqs = ns.expand(lockReqs)
@@ -700,7 +705,7 @@ func (ns *namespace) delete(tx *transaction, path string) error {
 	tx.addRB(unlock)
 
 	for _, req := range lockReqs[:len(lockReqs)-1] {
-		if err := ns.checkAncestor(req.path); err != nil {
+		if err := ns.isDir(req.path); err != nil {
 			return err
 		}
 	}

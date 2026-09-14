@@ -77,7 +77,10 @@ func (cs *chunkserver) handleRequests(ctx context.Context) {
 
 		case <-ctx.Done():
 			return
-		case req := <-reqCh:
+		case req, ok := <-reqCh:
+			if !ok {
+				return
+			}
 			cs.requestRouter(req)
 		}
 	}
@@ -91,7 +94,10 @@ func (cs *chunkserver) handleStreams(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case stream := <-streamsCh:
+		case stream, ok := <-streamsCh:
+			if !ok {
+				return
+			}
 			cs.streamRouter(stream)
 		}
 	}
@@ -138,7 +144,7 @@ func (cs *chunkserver) sendRequest(ctx context.Context, addr string, msg *hive.M
 
 	case <-ctx.Done():
 		peer.Unregister(msg)
-		return nil, nil
+		return nil, ctx.Err()
 
 	case res = <-ch:
 	}
@@ -164,7 +170,7 @@ func (cs *chunkserver) ping(ctx context.Context, addr string) error {
 			Size: uint32(len(payload)),
 		},
 	}
-	
+
 	res, err := cs.sendRequest(ctx, addr, msg)
 	if err != nil {
 		return err
