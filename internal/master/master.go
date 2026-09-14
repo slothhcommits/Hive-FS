@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -30,6 +32,7 @@ type MasterOpts struct {
 	isShadow    bool
 	listenAddr  string
 	shadowAddrs []string
+	hivePath    string // defaults to ~/.hiveFS
 }
 
 type master struct {
@@ -45,13 +48,22 @@ type master struct {
 }
 
 func newMaster(opts *MasterOpts) *master {
+
+	if opts.hivePath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+		opts.hivePath = filepath.Join(home, ".hiveFS")
+	}
+
 	return &master{
 
 		MasterOpts: opts,
 
 		transport: hive.NewTCPTransport(),
 
-		persistentState: newPersistentState(),
+		persistentState: newPersistentState(opts.hivePath),
 
 		csr: newChunkServerRegistry(),
 
@@ -60,6 +72,8 @@ func newMaster(opts *MasterOpts) *master {
 }
 
 func (m *master) Boot(ctx context.Context) error {
+
+	m.log.open()
 
 	// replay last checkpoint
 	m.buildState()
@@ -171,7 +185,7 @@ func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := &transaction{}
+	tx := m.newTx()
 
 	file, err := m.namespace.lookup(tx, req.Path)
 	defer tx.commit()
@@ -228,7 +242,7 @@ func (m *master) createFileHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := &transaction{}
+	tx := m.newTx()
 	if err := m.namespace.create(tx, req.Path); err != nil {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
@@ -255,9 +269,9 @@ func (m *master) createFileHandler(msg *hive.Message) *hive.Message {
 
 func (m *master) addNewChunk(path string, file *node) error {
 
-	tx := &transaction{}
+	tx := m.newTx()
 
-	chunk := newChunk()
+	chunk := newChunk(m.newChunkHandle())
 
 	m.chunkTable.stagedCreateMu.Lock()
 	m.chunkTable.stagedCreate[chunk.id] = struct{}{}
@@ -294,7 +308,7 @@ func (m *master) addNewChunk(path string, file *node) error {
 
 func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 
-	newChunk := newChunk()
+	newChunk := newChunk(m.newChunkHandle())
 	newChunk.version = oldChunk.version
 	newChunk.ref = 1
 	newChunk.repFactor = oldChunk.repFactor
@@ -389,7 +403,7 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	unlockNamespace := &transaction{}
+	unlockNamespace := m.newTx()
 
 	file, err := m.namespace.lookup(unlockNamespace, req.Path)
 	if err != nil {
@@ -455,7 +469,7 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		}
 
 		newChunk.version++
-		tx := &transaction{}
+		tx := m.newTx()
 		chunk.updateRef(tx, chunk.ref-1)
 		m.chunkTable.addChunk(tx, newChunk)
 		file.metadata.replaceChunkHandle(tx, req.Path, int(req.ChunkIdx), chunk.id, newChunk.id)
@@ -471,7 +485,7 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		if err != nil {
 			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
-		tx := &transaction{}
+		tx := m.newTx()
 		chunk.updateVersion(tx, chunk.version+1)
 		tx.commit()
 	}
@@ -487,7 +501,7 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := &transaction{}
+	tx := m.newTx()
 
 	nodes, err := m.namespace.snapshot(tx, req.Src, req.Dst)
 	if err != nil {
@@ -751,7 +765,7 @@ func (m *master) moveHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := &transaction{}
+	tx := m.newTx()
 	err = m.namespace.move(tx, req.Src, req.Dst)
 	if err != nil {
 		tx.rollback()
@@ -819,7 +833,7 @@ func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := &transaction{}
+	tx := m.newTx()
 	err = m.namespace.delete(tx, req.Path)
 	if err != nil {
 		tx.rollback()
@@ -925,7 +939,7 @@ func (m *master) garbageCollector() {
 		}
 		m.namespace.deletedMu.Unlock() // TODO: could have been RW lock
 
-		tx := &transaction{}
+		tx := m.newTx()
 
 		for _, entry := range entries {
 
@@ -982,7 +996,7 @@ func (m *master) garbageCollector() {
 
 		opsLeft = txLimit * opLimit
 
-		tx = &transaction{}
+		tx = m.newTx()
 		locks = []*sync.Mutex{}
 
 		m.chunkTable.mu.RLock()

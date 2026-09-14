@@ -6,17 +6,10 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/PraveenC2002/gfs/internal/messages"
 )
-
-var chunkHandle atomic.Uint64
-
-func getChunkHandle() uint64 {
-	return chunkHandle.Add(1)
-}
 
 const (
 	defaultRepFactor   uint32        = 3
@@ -35,10 +28,10 @@ type chunk struct {
 	locations      map[string]time.Time
 }
 
-func newChunk() *chunk {
+func newChunk(id uint64) *chunk {
 	return &chunk{
 		Mutex:     sync.Mutex{},
-		id:        getChunkHandle(),
+		id:        id,
 		ref:       0,
 		version:   0,
 		repFactor: defaultRepFactor,
