@@ -91,7 +91,7 @@ func (oplog *opLog) isFull() bool {
 	return info.Size() > maxLogSize
 }
 
-func (oplog *opLog) logAndApply(tx *transaction) {
+func (oplog *opLog) log(tx *transaction) {
 
 	log := messages.Master_Log{Recs: []*messages.Master_OperationRec{}}
 
@@ -121,8 +121,6 @@ func (oplog *opLog) logAndApply(tx *transaction) {
 
 		writeFile(buf.Bytes(), oplog.logFile)
 	}
-
-	tx.commit()
 }
 
 func (oplog *opLog) rotateLog(handle uint64) {

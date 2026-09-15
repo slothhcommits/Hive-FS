@@ -73,7 +73,7 @@ func newMaster(opts *MasterOpts) *master {
 
 func (master *master) Boot(ctx context.Context) error {
 
-	master.log.open()
+	master.logger.open()
 
 	// replay last checkpoint
 	master.buildState()
@@ -186,7 +186,7 @@ func (master *master) readFileHandler(msg *hive.Message) *hive.Message {
 	tx := newTransaction()
 
 	file, err := master.namespace.lookup(tx, req.Path)
-	defer master.persistentState.applyTransaction(tx)
+	defer master.persistentState.commitTransaction(tx)
 	if err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
@@ -245,7 +245,7 @@ func (master *master) createFileHandler(msg *hive.Message) *hive.Message {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
-	master.persistentState.applyTransaction(tx)
+	master.persistentState.commitTransaction(tx)
 
 	payload, err := proto.Marshal(&messages.Ack{
 		Success: true,
@@ -299,7 +299,7 @@ func (master *master) addNewChunk(path string, file *node) error {
 	file.appendChunkHandle(tx, path, chunk.id)
 	master.chunkTable.addChunk(tx, chunk)
 
-	master.persistentState.applyTransaction(tx)
+	master.persistentState.commitTransaction(tx)
 
 	return nil
 }
@@ -407,7 +407,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 	if err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
-	defer master.persistentState.applyTransaction(unlockNamespace)
+	defer master.persistentState.commitTransaction(unlockNamespace)
 	file.Lock()
 	defer file.Unlock()
 
@@ -471,7 +471,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 		chunk.updateRef(tx, chunk.ref-1)
 		master.chunkTable.addChunk(tx, newChunk)
 		file.metadata.replaceChunkHandle(tx, req.Path, int(req.ChunkIdx), chunk.id, newChunk.id)
-		master.persistentState.applyTransaction(tx)
+		master.persistentState.commitTransaction(tx)
 
 		chunk.Unlock()
 
@@ -485,7 +485,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 		}
 		tx := newTransaction()
 		chunk.updateVersion(tx, chunk.version+1)
-		master.persistentState.applyTransaction(tx)
+		master.persistentState.commitTransaction(tx)
 	}
 
 	return master.setWriteResponse(chunk)
@@ -564,7 +564,7 @@ func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
 
 	wg.Wait()
 
-	master.persistentState.applyTransaction(tx)
+	master.persistentState.commitTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -770,7 +770,7 @@ func (master *master) moveHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
 
-	master.persistentState.applyTransaction(tx)
+	master.persistentState.commitTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -838,7 +838,7 @@ func (master *master) deleteHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
 
-	master.persistentState.applyTransaction(tx)
+	master.persistentState.commitTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -991,7 +991,7 @@ func (master *master) garbageCollector() {
 		}
 
 		tx.addFunc(unlock)
-		master.persistentState.applyTransaction(tx)
+		master.persistentState.commitTransaction(tx)
 
 		opsLeft = txLimit * opLimit
 
@@ -1026,7 +1026,7 @@ func (master *master) garbageCollector() {
 		}
 
 		tx.addFunc(unlock)
-		master.persistentState.applyTransaction(tx)
+		master.persistentState.commitTransaction(tx)
 
 		select {
 		case <-master.closeCh:

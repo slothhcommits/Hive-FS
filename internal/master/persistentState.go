@@ -56,10 +56,10 @@ type transaction struct {
 }
 
 func newTransaction() *transaction {
-	return &transaction {
+	return &transaction{
 		operations: make([]*operation, 0),
-		exec: make([]func(), 0),
-		rollbacks: make([]func(), 0),
+		exec:       make([]func(), 0),
+		rollbacks:  make([]func(), 0),
 	}
 }
 
@@ -73,13 +73,6 @@ func (tx *transaction) addFunc(fn func()) {
 
 func (tx *transaction) addRB(fn func()) {
 	tx.rollbacks = append(tx.rollbacks, fn)
-}
-
-// be careful about the order
-func (tx *transaction) commit() {
-	for _, fn := range tx.exec {
-		fn()
-	}
 }
 
 // be careful about the order
@@ -122,7 +115,7 @@ type persistentState struct {
 	*namespace
 	*chunkTable
 
-	log         *opLog
+	logger         *opLog
 	chunkHandle atomic.Uint64
 
 	crc32Table *crc32.Table
@@ -135,7 +128,7 @@ func newPersistentState(dir string) *persistentState {
 		namespace:  newNamespace(),
 		chunkTable: newChunkTable(),
 
-		log: newOpLog(dir),
+		logger: newOpLog(dir),
 
 		crc32Table: crc32.MakeTable(crc32.Castagnoli),
 	}
@@ -148,7 +141,7 @@ func (s *persistentState) newChunkHandle() uint64 {
 
 func (s *persistentState) buildState() {
 
-	hivePath := s.log.dir
+	hivePath := s.logger.dir
 
 	files, err := os.ReadDir(hivePath)
 	if err != nil {
@@ -160,7 +153,7 @@ func (s *persistentState) buildState() {
 
 	var junk []string
 
-	currLogHandle := s.log.handle.Load()
+	currLogHandle := s.logger.handle.Load()
 	for _, file := range files {
 
 		if name, ok := strings.CutSuffix(file.Name(), ".log"); ok {
@@ -234,18 +227,22 @@ func (s *persistentState) buildState() {
 	}
 }
 
-func (s *persistentState) applyTransaction(tx *transaction) {
+func (s *persistentState) commitTransaction(tx *transaction) {
 
-	s.log.mu.Lock()
-	defer s.log.mu.Unlock()
+	s.logger.mu.Lock()
+	defer s.logger.mu.Unlock()
 
-	if s.log.isFull() {
-		newLoghandle := s.log.newHandle()
+	if s.logger.isFull() {
+		newLoghandle := s.logger.newHandle()
 		s.snapshotState(newLoghandle)
-		s.log.rotateLog(newLoghandle)
+		s.logger.rotateLog(newLoghandle)
 	}
-	
-	s.log.logAndApply(tx)
+
+	s.logger.log(tx)
+
+	for _, fn := range tx.exec {
+		fn()
+	}
 }
 
 func (s *persistentState) snapshotState(handle uint64) {
@@ -279,7 +276,7 @@ func (s *persistentState) snapshotState(handle uint64) {
 
 func (s *persistentState) flushState(handle uint64, snap *stateSnapshot) {
 
-	hivePath := s.log.dir
+	hivePath := s.logger.dir
 
 	file, err := os.Create(filepath.Join(hivePath, "temp.cp"))
 	if err != nil {
