@@ -71,42 +71,40 @@ func newMaster(opts *MasterOpts) *master {
 	}
 }
 
-func (m *master) Boot(ctx context.Context) error {
+func (master *master) Boot(ctx context.Context) error {
 
-	m.log.open()
+	master.log.open()
 
 	// replay last checkpoint
-	m.buildState()
+	master.buildState()
 
-	go m.listenCheckpointSig()
-
-	if !m.isShadow {
-		go m.garbageCollector()
-		go m.reReplicate()
+	if !master.isShadow {
+		go master.garbageCollector()
+		go master.reReplicate()
 	}
 
-	go m.handleRequests(ctx)
+	go master.handleRequests(ctx)
 
 	// ListenAndAccept blocks until the transport is shut down
 	go func() {
 		<-ctx.Done()
-		close(m.closeCh)
-		m.transport.Close()
+		close(master.closeCh)
+		master.transport.Close()
 	}()
 
-	return m.transport.ListenAndAccept(m.listenAddr)
+	return master.transport.ListenAndAccept(master.listenAddr)
 }
 
-func (m *master) handleRequests(ctx context.Context) {
+func (master *master) handleRequests(ctx context.Context) {
 
-	reqCh := m.transport.Consume()
+	reqCh := master.transport.Consume()
 	for {
 		select {
 		case req, ok := <-reqCh:
 			if !ok {
 				return
 			}
-			go m.requestRouter(req)
+			go master.requestRouter(req)
 		case <-ctx.Done():
 			return
 		}
@@ -114,42 +112,42 @@ func (m *master) handleRequests(ctx context.Context) {
 }
 
 // uninitiated requests
-func (m *master) requestRouter(req hive.Request) {
+func (master *master) requestRouter(req hive.Request) {
 
 	switch req.Message().Type {
 
 	// client
 	case uint8(messages.Client_MESSAGE_TYPE_READ_FILE):
-		req.Respond(m.readFileHandler(req.Message()))
+		req.Respond(master.readFileHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_CREATE_FILE):
-		req.Respond(m.createFileHandler(req.Message()))
+		req.Respond(master.createFileHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_CHUNK_REPLICAS):
-		req.Respond(m.writeHandler(req.Message()))
+		req.Respond(master.writeHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_SNAPSHOT):
-		req.Respond(m.snapshotHandler(req.Message()))
+		req.Respond(master.snapshotHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_MOVE):
-		req.Respond(m.moveHandler(req.Message()))
+		req.Respond(master.moveHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_LIST):
-		req.Respond(m.listHandler(req.Message()))
+		req.Respond(master.listHandler(req.Message()))
 
 	case uint8(messages.Client_MESSAGE_TYPE_DELETE):
-		req.Respond(m.deleteHandler(req.Message()))
+		req.Respond(master.deleteHandler(req.Message()))
 
 	// chunkserver
 	case uint8(messages.Chunkserver_MESSAGE_TYPE_HEARTBEAT):
-		req.Respond(m.heartbeatHandler(req.Message()))
+		req.Respond(master.heartbeatHandler(req.Message()))
 	}
 
 }
 
-func (m *master) sendRequest(ctx context.Context, addr string, msg *hive.Message) (*hive.Message, error) {
+func (master *master) sendRequest(ctx context.Context, addr string, msg *hive.Message) (*hive.Message, error) {
 
-	peer, err := m.transport.Dial(addr)
+	peer, err := master.transport.Dial(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +175,7 @@ func (m *master) sendRequest(ctx context.Context, addr string, msg *hive.Message
 	return res, nil
 }
 
-func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
+func (master *master) readFileHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_Read{}
 	err := proto.Unmarshal(msg.Payload, req)
@@ -185,10 +183,10 @@ func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := m.newTx()
+	tx := newTransaction()
 
-	file, err := m.namespace.lookup(tx, req.Path)
-	defer tx.commit()
+	file, err := master.namespace.lookup(tx, req.Path)
+	defer master.persistentState.applyTransaction(tx)
 	if err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
@@ -201,14 +199,14 @@ func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
 
 	chunks := []*chunk{}
 
-	m.chunkTable.mu.RLock()
+	master.chunkTable.mu.RLock()
 	for _, handle := range file.chunkHandles[int(req.Idx):min(int(req.Idx)+int(req.Count), len(file.chunkHandles))] {
-		chunk, ok := m.chunkTable.entries[handle]
+		chunk, ok := master.chunkTable.entries[handle]
 		if ok {
 			chunks = append(chunks, chunk)
 		}
 	}
-	m.chunkTable.mu.RUnlock()
+	master.chunkTable.mu.RUnlock()
 
 	res := &messages.Master_File{}
 	for _, chunk := range chunks {
@@ -235,19 +233,19 @@ func (m *master) readFileHandler(msg *hive.Message) *hive.Message {
 	}
 }
 
-func (m *master) createFileHandler(msg *hive.Message) *hive.Message {
+func (master *master) createFileHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_CreateFile{}
 	if err := proto.Unmarshal(msg.Payload, req); err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := m.newTx()
-	if err := m.namespace.create(tx, req.Path); err != nil {
+	tx := newTransaction()
+	if err := master.namespace.create(tx, req.Path); err != nil {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
-	tx.commit()
+	master.persistentState.applyTransaction(tx)
 
 	payload, err := proto.Marshal(&messages.Ack{
 		Success: true,
@@ -267,22 +265,22 @@ func (m *master) createFileHandler(msg *hive.Message) *hive.Message {
 	return res
 }
 
-func (m *master) addNewChunk(path string, file *node) error {
+func (master *master) addNewChunk(path string, file *node) error {
 
-	tx := m.newTx()
+	tx := newTransaction()
 
-	chunk := newChunk(m.newChunkHandle())
+	chunk := newChunk(master.newChunkHandle())
 
-	m.chunkTable.stagedCreateMu.Lock()
-	m.chunkTable.stagedCreate[chunk.id] = struct{}{}
-	m.chunkTable.stagedCreateMu.Unlock()
+	master.chunkTable.stagedCreateMu.Lock()
+	master.chunkTable.stagedCreate[chunk.id] = struct{}{}
+	master.chunkTable.stagedCreateMu.Unlock()
 	defer func() {
-		m.chunkTable.stagedCreateMu.Lock()
-		delete(m.chunkTable.stagedCreate, chunk.id)
-		m.chunkTable.stagedCreateMu.Unlock()
+		master.chunkTable.stagedCreateMu.Lock()
+		delete(master.chunkTable.stagedCreate, chunk.id)
+		master.chunkTable.stagedCreateMu.Unlock()
 	}()
 
-	servers, err := m.csr.getServers(chunk.repFactor, []string{})
+	servers, err := master.csr.getServers(chunk.repFactor, []string{})
 	if err != nil {
 		return err
 	}
@@ -291,7 +289,7 @@ func (m *master) addNewChunk(path string, file *node) error {
 		chunk.locations[server] = time.Time{}
 	}
 
-	err = m.grantLease(chunk)
+	err = master.grantLease(chunk)
 	if err != nil {
 		return err
 	}
@@ -299,16 +297,16 @@ func (m *master) addNewChunk(path string, file *node) error {
 	chunk.version++
 	chunk.ref++
 	file.appendChunkHandle(tx, path, chunk.id)
-	m.chunkTable.addChunk(tx, chunk)
+	master.chunkTable.addChunk(tx, chunk)
 
-	tx.commit()
+	master.persistentState.applyTransaction(tx)
 
 	return nil
 }
 
-func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
+func (master *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 
-	newChunk := newChunk(m.newChunkHandle())
+	newChunk := newChunk(master.newChunkHandle())
 	newChunk.version = oldChunk.version
 	newChunk.ref = 1
 	newChunk.repFactor = oldChunk.repFactor
@@ -323,9 +321,9 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 		panic(err)
 	}
 
-	m.chunkTable.stagedCreateMu.Lock()
-	m.chunkTable.stagedCreate[newChunk.id] = struct{}{}
-	m.chunkTable.stagedCreateMu.Unlock()
+	master.chunkTable.stagedCreateMu.Lock()
+	master.chunkTable.stagedCreate[newChunk.id] = struct{}{}
+	master.chunkTable.stagedCreateMu.Unlock()
 
 	wg := sync.WaitGroup{}
 
@@ -344,7 +342,7 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), copyAckTimeout)
 			defer cancel()
 
-			ack, err := m.sendRequest(ctx, loc, &msg)
+			ack, err := master.sendRequest(ctx, loc, &msg)
 			if err == nil {
 
 				res := &messages.Ack{}
@@ -362,15 +360,15 @@ func (m *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 	wg.Wait()
 
 	if len(newChunk.locations) == 0 {
-		m.chunkTable.stagedCreateMu.Lock()
-		delete(m.chunkTable.stagedCreate, newChunk.id)
-		m.chunkTable.stagedCreateMu.Unlock()
+		master.chunkTable.stagedCreateMu.Lock()
+		delete(master.chunkTable.stagedCreate, newChunk.id)
+		master.chunkTable.stagedCreateMu.Unlock()
 		return nil, internal.ErrUnavailable
 	}
 	return newChunk, nil
 }
 
-func (m *master) setWriteResponse(chunk *chunk) *hive.Message {
+func (master *master) setWriteResponse(chunk *chunk) *hive.Message {
 
 	sendReplicas := &messages.Master_Chunk{
 		ChunkId:     chunk.id,
@@ -396,20 +394,20 @@ func (m *master) setWriteResponse(chunk *chunk) *hive.Message {
 	return res
 }
 
-func (m *master) writeHandler(msg *hive.Message) *hive.Message {
+func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_GetChunkReplicas{}
 	if err := proto.Unmarshal(msg.Payload, req); err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	unlockNamespace := m.newTx()
+	unlockNamespace := newTransaction()
 
-	file, err := m.namespace.lookup(unlockNamespace, req.Path)
+	file, err := master.namespace.lookup(unlockNamespace, req.Path)
 	if err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
-	defer unlockNamespace.commit()
+	defer master.persistentState.applyTransaction(unlockNamespace)
 	file.Lock()
 	defer file.Unlock()
 
@@ -429,22 +427,22 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 	// add new chunk
 	if uint32(len(file.chunkHandles)) == req.ChunkIdx {
 
-		if err := m.addNewChunk(req.Path, file); err != nil {
+		if err := master.addNewChunk(req.Path, file); err != nil {
 			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
 
-		m.chunkTable.mu.RLock()
-		chunk := m.chunkTable.entries[file.chunkHandles[req.ChunkIdx]]
-		m.chunkTable.mu.RUnlock()
+		master.chunkTable.mu.RLock()
+		chunk := master.chunkTable.entries[file.chunkHandles[req.ChunkIdx]]
+		master.chunkTable.mu.RUnlock()
 
 		chunk.Lock()
 		defer chunk.Unlock()
-		return m.setWriteResponse(chunk)
+		return master.setWriteResponse(chunk)
 	}
 
-	m.chunkTable.mu.RLock()
-	chunk := m.chunkTable.entries[file.chunkHandles[req.ChunkIdx]]
-	m.chunkTable.mu.RUnlock()
+	master.chunkTable.mu.RLock()
+	chunk := master.chunkTable.entries[file.chunkHandles[req.ChunkIdx]]
+	master.chunkTable.mu.RUnlock()
 
 	chunk.Lock()
 	defer func() {
@@ -453,27 +451,27 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 
 	// COW
 	if chunk.ref > 1 {
-		newChunk, err := m.copyOnWrite(chunk)
+		newChunk, err := master.copyOnWrite(chunk)
 		if err != nil {
 			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
 
 		defer func() {
-			m.chunkTable.stagedCreateMu.Lock()
-			delete(m.chunkTable.stagedCreate, newChunk.id)
-			m.chunkTable.stagedCreateMu.Unlock()
+			master.chunkTable.stagedCreateMu.Lock()
+			delete(master.chunkTable.stagedCreate, newChunk.id)
+			master.chunkTable.stagedCreateMu.Unlock()
 		}()
 
-		if err := m.grantLease(newChunk); err != nil {
+		if err := master.grantLease(newChunk); err != nil {
 			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
 
 		newChunk.version++
-		tx := m.newTx()
+		tx := newTransaction()
 		chunk.updateRef(tx, chunk.ref-1)
-		m.chunkTable.addChunk(tx, newChunk)
+		master.chunkTable.addChunk(tx, newChunk)
 		file.metadata.replaceChunkHandle(tx, req.Path, int(req.ChunkIdx), chunk.id, newChunk.id)
-		tx.commit()
+		master.persistentState.applyTransaction(tx)
 
 		chunk.Unlock()
 
@@ -481,19 +479,19 @@ func (m *master) writeHandler(msg *hive.Message) *hive.Message {
 		chunk.Lock()
 
 	} else if time.Since(chunk.leaseGrantTime) > leaseDeadline { // lease expired
-		err := m.grantLease(chunk)
+		err := master.grantLease(chunk)
 		if err != nil {
 			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 		}
-		tx := m.newTx()
+		tx := newTransaction()
 		chunk.updateVersion(tx, chunk.version+1)
-		tx.commit()
+		master.persistentState.applyTransaction(tx)
 	}
 
-	return m.setWriteResponse(chunk)
+	return master.setWriteResponse(chunk)
 }
 
-func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
+func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_Snapshot{}
 	err := proto.Unmarshal(msg.Payload, req)
@@ -501,9 +499,9 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := m.newTx()
+	tx := newTransaction()
 
-	nodes, err := m.namespace.snapshot(tx, req.Src, req.Dst)
+	nodes, err := master.namespace.snapshot(tx, req.Src, req.Dst)
 	if err != nil {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
@@ -522,17 +520,17 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 		}
 	}
 
-	m.chunkTable.mu.RLock()
+	master.chunkTable.mu.RLock()
 
 	chunks := []*chunk{}
 
 	for handle, _ := range chunkSet {
-		if c, ok := m.chunkTable.entries[handle]; ok {
+		if c, ok := master.chunkTable.entries[handle]; ok {
 			chunks = append(chunks, c)
 		}
 	}
 
-	m.chunkTable.mu.RUnlock()
+	master.chunkTable.mu.RUnlock()
 
 	sort.Slice(chunks, func(i, j int) bool {
 		return chunks[i].id < chunks[j].id
@@ -560,13 +558,13 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 		wg.Add(1)
 		go func(primary string, handles []uint64) {
 			defer wg.Done()
-			m.revokeLease(primary, handles)
+			master.revokeLease(primary, handles)
 		}(primary, handles)
 	}
 
 	wg.Wait()
 
-	tx.commit()
+	master.persistentState.applyTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -587,7 +585,7 @@ func (m *master) snapshotHandler(msg *hive.Message) *hive.Message {
 
 }
 
-func (m *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
+func (master *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
 
 	payload, err := proto.Marshal(&messages.Master_UpdateVersion{
 		Id:      chunk.id,
@@ -630,7 +628,7 @@ func (m *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), versionAckTimeout)
 			defer cancel()
 
-			ackMsg, err := m.sendRequest(ctx, server, msg)
+			ackMsg, err := master.sendRequest(ctx, server, msg)
 			
 			if err == nil && ackMsg.Type == uint8(messages.MessageType_ACK) {
 
@@ -657,7 +655,7 @@ func (m *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
 	return acked, nil
 }
 
-func (m *master) grantLease(c *chunk) error {
+func (master *master) grantLease(c *chunk) error {
 
 	payload, err := proto.Marshal(&messages.Master_GrantLease{
 		Id: c.id,
@@ -668,7 +666,7 @@ func (m *master) grantLease(c *chunk) error {
 
 	// locations := c.getLocations(nil)
 
-	acked, err := m.updateVersion(c)
+	acked, err := master.updateVersion(c)
 	if err != nil {
 		return err
 	}
@@ -686,7 +684,7 @@ func (m *master) grantLease(c *chunk) error {
 		}
 		
 		ctx, cancel := context.WithTimeout(context.Background(), grantLeaseTimeout)
-		ackMsg, err := m.sendRequest(ctx, addr, msg)
+		ackMsg, err := master.sendRequest(ctx, addr, msg)
 		cancel()
 		if err == nil && ackMsg.Type == uint8(messages.MessageType_ACK) {
 
@@ -728,7 +726,7 @@ func (m *master) grantLease(c *chunk) error {
 	return nil
 }
 
-func (m *master) revokeLease(primary string, handles []uint64) {
+func (master *master) revokeLease(primary string, handles []uint64) {
 
 	req := &messages.Master_RevokeLease{
 		Handles: handles,
@@ -750,13 +748,13 @@ func (m *master) revokeLease(primary string, handles []uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), leaseDeadline)
 	defer cancel()
 
-	_, err = m.sendRequest(ctx, primary, msg)
+	_, err = master.sendRequest(ctx, primary, msg)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		time.Sleep(leaseDeadline)
 	}
 }
 
-func (m *master) moveHandler(msg *hive.Message) *hive.Message {
+func (master *master) moveHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_Move{}
 
@@ -765,14 +763,14 @@ func (m *master) moveHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := m.newTx()
-	err = m.namespace.move(tx, req.Src, req.Dst)
+	tx := newTransaction()
+	err = master.namespace.move(tx, req.Src, req.Dst)
 	if err != nil {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
 
-	tx.commit()
+	master.persistentState.applyTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -792,7 +790,7 @@ func (m *master) moveHandler(msg *hive.Message) *hive.Message {
 	}
 }
 
-func (m *master) listHandler(msg *hive.Message) *hive.Message {
+func (master *master) listHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_List{}
 
@@ -801,7 +799,7 @@ func (m *master) listHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	contents, err := m.namespace.list(req.Path)
+	contents, err := master.namespace.list(req.Path)
 	if err != nil {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
@@ -824,7 +822,7 @@ func (m *master) listHandler(msg *hive.Message) *hive.Message {
 	}
 }
 
-func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
+func (master *master) deleteHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_Delete{}
 
@@ -833,14 +831,14 @@ func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	tx := m.newTx()
-	err = m.namespace.delete(tx, req.Path)
+	tx := newTransaction()
+	err = master.namespace.delete(tx, req.Path)
 	if err != nil {
 		tx.rollback()
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
 	}
 
-	tx.commit()
+	master.persistentState.applyTransaction(tx)
 
 	res := &messages.Ack{
 		Success: true,
@@ -860,7 +858,7 @@ func (m *master) deleteHandler(msg *hive.Message) *hive.Message {
 	}
 }
 
-func (m *master) heartbeatHandler(msg *hive.Message) *hive.Message {
+func (master *master) heartbeatHandler(msg *hive.Message) *hive.Message {
 
 	hb := &messages.Chunkserver_Heartbeat{}
 	err := proto.Unmarshal(msg.Payload, hb)
@@ -868,8 +866,8 @@ func (m *master) heartbeatHandler(msg *hive.Message) *hive.Message {
 		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
 	}
 
-	m.csr.update(hb)
-	res := m.chunkTable.processHeartbeat(hb)
+	master.csr.update(hb)
+	res := master.chunkTable.processHeartbeat(hb)
 
 	payload, err := proto.Marshal(res)
 	if err != nil {
@@ -885,7 +883,7 @@ func (m *master) heartbeatHandler(msg *hive.Message) *hive.Message {
 	}
 }
 
-func (m *master) garbageCollector() {
+func (master *master) garbageCollector() {
 
 	for {
 
@@ -897,14 +895,15 @@ func (m *master) garbageCollector() {
 		type entry struct {
 			key       string
 			node      *deletedNode
+			length    int
 			processed int
 		}
 
 		entries := []*entry{}
 		handleSet := make(map[uint64]uint32)
 
-		m.namespace.deletedMu.Lock()
-		for key, deletedNode := range m.namespace.deleted {
+		master.namespace.deletedMu.Lock()
+		for key, deletedNode := range master.namespace.deleted {
 
 			if opsLeft <= 0 {
 				break
@@ -912,7 +911,7 @@ func (m *master) garbageCollector() {
 
 			if time.Since(time.Unix(0, deletedNode.deletedAt)) > nodeExpiryWindow {
 
-				m.chunkTable.mu.RLock()
+				master.chunkTable.mu.RLock()
 				i := 0
 				for _, handle := range deletedNode.chunkHandles {
 
@@ -920,7 +919,7 @@ func (m *master) garbageCollector() {
 						break
 					}
 
-					if _, ok := m.chunkTable.entries[handle]; ok {
+					if _, ok := master.chunkTable.entries[handle]; ok {
 						_, ok := handleSet[handle]
 						if ok {
 							handleSet[handle]++
@@ -931,33 +930,33 @@ func (m *master) garbageCollector() {
 					}
 					i++
 				}
-				m.chunkTable.mu.RUnlock()
+				master.chunkTable.mu.RUnlock()
 
-				entries = append(entries, &entry{key: key, node: deletedNode, processed: i})
+				entries = append(entries, &entry{key: key, node: deletedNode, length: len(deletedNode.chunkHandles), processed: i})
 				opsLeft--
 			}
 		}
-		m.namespace.deletedMu.Unlock() // TODO: could have been RW lock
+		master.namespace.deletedMu.Unlock() // TODO: could have been RW lock
 
-		tx := m.newTx()
+		tx := newTransaction()
 
 		for _, entry := range entries {
 
-			tx.addOp(&operation{
+			tx.addOperation(&operation{
 				t:    DELETE,
-				args: []string{entry.key, strconv.FormatInt(int64(entry.processed), 10)},
+				args: []string{entry.key, strconv.Itoa(entry.length), strconv.Itoa(entry.processed)},
 			})
 
 			tx.addFunc(func() {
-				m.namespace.deletedMu.Lock()
+				master.namespace.deletedMu.Lock()
 				if entry.processed >= len(entry.node.chunkHandles) {
-					delete(m.namespace.deleted, entry.key)
+					delete(master.namespace.deleted, entry.key)
 				} else {
 					entry.node.Lock()
 					entry.node.chunkHandles = entry.node.chunkHandles[entry.processed:]
 					entry.node.Unlock()
 				}
-				m.namespace.deletedMu.Unlock()
+				master.namespace.deletedMu.Unlock()
 			})
 		}
 
@@ -976,9 +975,9 @@ func (m *master) garbageCollector() {
 		slices.Sort(handles)
 
 		for _, handle := range handles {
-			m.chunkTable.mu.RLock()
-			chunk, ok := m.chunkTable.entries[handle]
-			m.chunkTable.mu.RUnlock()
+			master.chunkTable.mu.RLock()
+			chunk, ok := master.chunkTable.entries[handle]
+			master.chunkTable.mu.RUnlock()
 
 			if ok {
 				chunk.Lock()
@@ -992,19 +991,19 @@ func (m *master) garbageCollector() {
 		}
 
 		tx.addFunc(unlock)
-		tx.commit()
+		master.persistentState.applyTransaction(tx)
 
 		opsLeft = txLimit * opLimit
 
-		tx = m.newTx()
+		tx = newTransaction()
 		locks = []*sync.Mutex{}
 
-		m.chunkTable.mu.RLock()
+		master.chunkTable.mu.RLock()
 		chunks := []*chunk{}
-		for _, chunk := range m.chunkTable.entries {
+		for _, chunk := range master.chunkTable.entries {
 			chunks = append(chunks, chunk)
 		}
-		m.chunkTable.mu.RUnlock()
+		master.chunkTable.mu.RUnlock()
 
 		sort.Slice(chunks, func(i, j int) bool {
 			return chunks[i].id < chunks[j].id
@@ -1018,7 +1017,7 @@ func (m *master) garbageCollector() {
 
 			chunk.Lock()
 			if chunk.ref == 0 {
-				m.chunkTable.remove(tx, chunk.id)
+				master.chunkTable.remove(tx, chunk.id)
 				locks = append(locks, &chunk.Mutex)
 				opsLeft--
 			} else {
@@ -1027,10 +1026,10 @@ func (m *master) garbageCollector() {
 		}
 
 		tx.addFunc(unlock)
-		tx.commit()
+		master.persistentState.applyTransaction(tx)
 
 		select {
-		case <-m.closeCh:
+		case <-master.closeCh:
 			return
 		case <-time.After(gcInterval):
 
@@ -1038,31 +1037,31 @@ func (m *master) garbageCollector() {
 	}
 }
 
-func (m *master) reReplicate() {
+func (master *master) reReplicate() {
 
 	for {
 
-		m.csr.prune()
+		master.csr.prune()
 
-		m.chunkTable.repRequestsMu.Lock()
-		for handle, reqs := range m.chunkTable.repRequests {
+		master.chunkTable.repRequestsMu.Lock()
+		for handle, reqs := range master.chunkTable.repRequests {
 			for addr, issuedAt := range reqs {
 				if time.Since(issuedAt) > repRequestExpiry {
 					delete(reqs, addr)
 				}
 			}
 			if len(reqs) == 0 {
-				delete(m.chunkTable.repRequests, handle)
+				delete(master.chunkTable.repRequests, handle)
 			}
 		}
-		m.chunkTable.repRequestsMu.Unlock()
+		master.chunkTable.repRequestsMu.Unlock()
 
-		m.chunkTable.mu.RLock()
+		master.chunkTable.mu.RLock()
 		chunks := []*chunk{}
-		for _, chunk := range m.chunkTable.entries {
+		for _, chunk := range master.chunkTable.entries {
 			chunks = append(chunks, chunk)
 		}
-		m.chunkTable.mu.RUnlock()
+		master.chunkTable.mu.RUnlock()
 
 		sort.Slice(chunks, func(i, j int) bool {
 			return chunks[i].id < chunks[j].id
@@ -1151,11 +1150,11 @@ func (m *master) reReplicate() {
 						},
 					}
 
-					m.sendRequest(nil, addr, msg)
+					master.sendRequest(nil, addr, msg)
 
-					m.chunkTable.mu.RLock()
-					chunk, ok := m.chunkTable.entries[o.handle]
-					m.chunkTable.mu.RUnlock()
+					master.chunkTable.mu.RLock()
+					chunk, ok := master.chunkTable.entries[o.handle]
+					master.chunkTable.mu.RUnlock()
 
 					if ok {
 						chunk.Lock()
@@ -1178,16 +1177,16 @@ func (m *master) reReplicate() {
 
 			// servers already asked to pull this chunk, excluded from placement
 			// so we don't ask the same one twice while its copy is in flight
-			m.chunkTable.repRequestsMu.Lock()
-			pending := slices.Collect(maps.Keys(m.chunkTable.repRequests[s.handle]))
-			m.chunkTable.repRequestsMu.Unlock()
+			master.chunkTable.repRequestsMu.Lock()
+			pending := slices.Collect(maps.Keys(master.chunkTable.repRequests[s.handle]))
+			master.chunkTable.repRequestsMu.Unlock()
 
 			needed := int(s.repFactor) - len(s.srcs) - len(pending)
 			if needed <= 0 {
 				continue
 			}
 
-			servers, err := m.csr.getServers(uint32(needed), append(slices.Clone(s.srcs), pending...))
+			servers, err := master.csr.getServers(uint32(needed), append(slices.Clone(s.srcs), pending...))
 			if err == nil {
 
 				srcIdx := 0
@@ -1215,14 +1214,14 @@ func (m *master) reReplicate() {
 							},
 						}
 
-						m.sendRequest(nil, server, msg)
+						master.sendRequest(nil, server, msg)
 
-						m.chunkTable.repRequestsMu.Lock()
-						if _, ok := m.chunkTable.repRequests[s.handle]; !ok {
-							m.chunkTable.repRequests[s.handle] = make(map[string]time.Time)
+						master.chunkTable.repRequestsMu.Lock()
+						if _, ok := master.chunkTable.repRequests[s.handle]; !ok {
+							master.chunkTable.repRequests[s.handle] = make(map[string]time.Time)
 						}
-						m.chunkTable.repRequests[s.handle][server] = time.Now()
-						m.chunkTable.repRequestsMu.Unlock()
+						master.chunkTable.repRequests[s.handle][server] = time.Now()
+						master.chunkTable.repRequestsMu.Unlock()
 					}(srcIdx, server)
 					srcIdx++
 				}
@@ -1233,7 +1232,7 @@ func (m *master) reReplicate() {
 		wg.Wait()
 
 		select {
-		case <-m.closeCh:
+		case <-master.closeCh:
 			return
 		case <-time.After(reReplicationInterval):
 		}

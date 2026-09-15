@@ -62,7 +62,7 @@ func (c *chunk) getLocations(exclude []string) []string {
 
 func (c *chunk) updateRef(tx *transaction, ref uint32) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t:    UPDATE_REF,
 		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(ref), 10)},
 	})
@@ -75,7 +75,7 @@ func (c *chunk) updateRef(tx *transaction, ref uint32) {
 
 func (c *chunk) updateVersion(tx *transaction, ver uint32) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t:    UPDATE_VERSION,
 		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(ver), 10)},
 	})
@@ -87,7 +87,7 @@ func (c *chunk) updateVersion(tx *transaction, ver uint32) {
 
 func (c *chunk) updateRep(tx *transaction, rep uint32) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t:    UPDATE_REP,
 		args: []string{strconv.FormatUint(c.id, 10), strconv.FormatUint(uint64(rep), 10)},
 	})
@@ -125,7 +125,7 @@ func newChunkTable() *chunkTable {
 
 func (ct *chunkTable) addChunk(tx *transaction, c *chunk) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t: CREATE_CHUNK,
 		args: []string{strconv.FormatUint(c.id, 10),
 			strconv.FormatUint(uint64(c.ref), 10),
@@ -146,7 +146,7 @@ func (ct *chunkTable) addChunk(tx *transaction, c *chunk) {
 
 func (ct *chunkTable) remove(tx *transaction, handle uint64) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t:    DELETE_CHUNK,
 		args: []string{strconv.FormatUint(handle, 10)},
 	})

@@ -15,7 +15,7 @@ type metadata struct {
 
 func (m *metadata) appendChunkHandle(tx *transaction, path string, handle uint64) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t:    APPEND_CHUNK,
 		args: []string{path, strconv.FormatUint(handle, 10)},
 	})
@@ -28,7 +28,7 @@ func (m *metadata) appendChunkHandle(tx *transaction, path string, handle uint64
 // all validation to be done in caller
 func (m *metadata) replaceChunkHandle(tx *transaction, path string, idx int, oldHandle uint64, newHandle uint64) {
 
-	tx.addOp(&operation{
+	tx.addOperation(&operation{
 		t: REPLACE_CHUNK,
 		args: []string{
 			path,
@@ -38,8 +38,11 @@ func (m *metadata) replaceChunkHandle(tx *transaction, path string, idx int, old
 		},
 	})
 
+	// clone instead of writing in place; checkpoint snapshots share the old backing array
 	tx.addFunc(func() {
-		m.chunkHandles[idx] = newHandle
+		chunkHandles := slices.Clone(m.chunkHandles)
+		chunkHandles[idx] = newHandle
+		m.chunkHandles = chunkHandles
 	})
 }
 
@@ -236,7 +239,7 @@ func (ns *namespace) mkdir(tx *transaction, path string) error {
 	ns.mu.RUnlock()
 	if !ok {
 
-		tx.addOp(&operation{
+		tx.addOperation(&operation{
 			t:    CREATE_DIR,
 			args: []string{path},
 		})
@@ -281,7 +284,7 @@ func (ns *namespace) create(tx *transaction, path string) error {
 	ns.mu.RUnlock()
 	if !ok {
 
-		tx.addOp(&operation{
+		tx.addOperation(&operation{
 			t:    CREATE_FILE,
 			args: []string{path},
 		})
@@ -402,7 +405,7 @@ func (ns *namespace) moveNodes(tx *transaction, list []*struct {
 	ns.mu.RUnlock()
 	
 	for _, ele := range list {
-		tx.addOp(&operation{
+		tx.addOperation(&operation{
 			t:    MOVE,
 			args: []string{ele.src, ele.dst},
 		})
@@ -541,7 +544,7 @@ func (ns *namespace) snapshotNodes(tx *transaction, list []*struct {
 }) {
 
 	for _, ele := range list {
-		tx.addOp(&operation{
+		tx.addOperation(&operation{
 			t:    SNAPSHOT,
 			args: []string{ele.src, ele.dst},
 		})
@@ -714,7 +717,7 @@ func (ns *namespace) delete(tx *transaction, path string) error {
 
 	delTime := time.Now().UnixNano()
 	for _, path := range contents {
-		tx.addOp(&operation{
+		tx.addOperation(&operation{
 			t:    REMOVE,
 			args: []string{path, strconv.FormatInt(delTime, 10)},
 		})
