@@ -2,13 +2,44 @@ syntax = "proto3";
 
 package gfs.v1;
 
-option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
 
 enum MessageType {
   UNSPECIFIED = 0;
-  ACK = 1;
+  ACK = 200;
 }
 
 message Ack {
   bool success = 1;
+  Error err = 2;
+  bytes data = 3;
+}
+
+message Error {
+  enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_ERROR = 199;
+  }
+
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+
+    CODE_UNMARSHAL_FAILED = 151;
+    CODE_OP_FAILED = 152;
+    CODE_BAD_REQUEST = 162;
+    CODE_UNAVAILABLE = 156;
+    CODE_EXISTS = 159;
+    CODE_COLLISION = 160;
+    CODE_OVERFLOW = 154;
+    CODE_NOT_FOUND = 163;
+
+    // chunkserver
+    CODE_CHUNKSERVER_BUSY = 153;
+    CODE_CHUNKSERVER_STREAM_FAILED = 155;
+    CODE_CHUNKSERVER_LEASE_UNAVAILABLE = 158;
+    CODE_CHUNKSERVER_INCONSISTENT = 161;
+  }
+
+  Code code = 1;
+  string message = 2;
 }
