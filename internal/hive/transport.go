@@ -307,7 +307,14 @@ func (t *TCPTransport) readInbound(conn net.Conn) {
 
 		err := validateProtocol(conn, msg)
 		if err != nil {
-			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			// log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			return
+		}
+
+		err = readPayload(conn, msg)
+		if err != nil {
+			t.writeError(connection, msg, err)
+			// log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
 			return
 		}
 
@@ -315,14 +322,9 @@ func (t *TCPTransport) readInbound(conn net.Conn) {
 
 		case (msg.frameFlags & flagStream) == flagStream:
 
-			s, err := getStream(conn)
-			if err != nil {
-				log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
-				return
-			}
-
+			// the handler owns the conn from here, both directions
 			select {
-			case t.StreamsCh <- s:
+			case t.StreamsCh <- newStream(conn, msg, nil):
 				connection.isStream.Store(true)
 				conn.SetReadDeadline(time.Time{})
 			case <-t.shutdown:
@@ -331,20 +333,13 @@ func (t *TCPTransport) readInbound(conn net.Conn) {
 
 		default:
 
-			err := readPayload(conn, msg)
-			if err != nil {
-				t.writeError(connection, msg, err)
-				log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
-				return
-			}
-
 			pushMsg(msg)
 		}
 	}
 }
 
 // dial returns an outbound peer.
-func (t *TCPTransport) Dial(addr string) (Peer, error) {
+func (t *TCPTransport) Dial(ctx context.Context, addr string) (Peer, error) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -423,37 +418,43 @@ func (t *TCPTransport) readOutbound(peer *OutboundPeer) {
 
 }
 
-func (t *TCPTransport) dropOutbound(addr string) {
-	t.obMu.Lock()
-	delete(t.outboundPeers, addr)
-	t.obMu.Unlock()
+// both the reader and a failed write evict, so only delete the cache entry if
+// it is still this peer, not a fresh one dialled after this one was dropped.
+func (t *TCPTransport) dropOutbound(peer *OutboundPeer) {
+	key := peer.RemoteAddr()
+	t.outboundPeersMu.Lock()
+	if cached, ok := t.outboundPeers[key]; ok && cached == peer {
+		delete(t.outboundPeers, key)
+	}
+	peer.Close()
+	t.outboundPeersMu.Unlock()
 }
 
 func (t *TCPTransport) Consume() <-chan Request {
 	return t.Messages
 }
 
-func (t *TCPTransport) OpenStream(addr string, dialTimeout time.Duration, md Metadata) (io.WriteCloser, error) {
+func (t *TCPTransport) OpenStream(ctx context.Context, addr string, metadata *Message) (*Stream, error) {
 
-	if md.Size == 0 {
-		return nil, errors.New("zero-length stream")
-	}
-
-	header := makeHeader(&Message{
-		frameFlags: flagStream,
-		Metadata:   md,
-	})
-
-	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	return &streamWriter{
-		w:         conn,
-		remaining: int(md.Size),
-		header:    header,
-	}, nil
+	// closing conn on cancel unblocks a Write stuck on the network
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+
+	metadata.frameFlags = flagStream
+	
+	err = writeFrame(conn, metadata)
+	if err != nil {
+		stop()
+		conn.Close()
+		return nil, err
+	}
+
+	return newStream(conn, metadata, stop), nil
 }
 
 func (t *TCPTransport) Streams() <-chan *Stream {
