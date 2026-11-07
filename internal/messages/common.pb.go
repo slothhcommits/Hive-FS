@@ -336,7 +336,7 @@ const file_gfs_v1_common_proto_rawDesc = "" +
 	"\x1dCODE_CHUNKSERVER_INCONSISTENT\x10\xa1\x01*(\n" +
 	"\vMessageType\x12\x0f\n" +
 	"\vUNSPECIFIED\x10\x00\x12\b\n" +
-	"\x03ACK\x10\xc8\x01B;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
+	"\x03ACK\x10\xc8\x01B=Z;github.com/slothhcommits/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_common_proto_rawDescOnce sync.Once

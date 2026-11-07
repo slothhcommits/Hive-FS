@@ -4,7 +4,7 @@ package gfs.v1;
 
 import "gfs/v1/common.proto";
 
-option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
+option go_package = "github.com/slothhcommits/Hive-FS/internal/messages;messages";
 
 // chunkserver message range is 51 - 100
 message Chunkserver {

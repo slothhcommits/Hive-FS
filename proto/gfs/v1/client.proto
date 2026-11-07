@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package gfs.v1;
 
-option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
+option go_package = "github.com/slothhcommits/Hive-FS/internal/messages;messages";
 
 // client message type range is 1 - 50
 message Client {

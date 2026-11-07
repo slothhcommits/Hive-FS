@@ -1112,7 +1112,7 @@ const file_gfs_v1_master_proto_rawDesc = "" +
 	"\x19MESSAGE_TYPE_REVOKE_LEASE\x10h\x12!\n" +
 	"\x1dMESSAGE_TYPE_LOCAL_COPY_CHUNK\x10i\x12 \n" +
 	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10j\x12\x1d\n" +
-	"\x19MESSAGE_TYPE_DELETE_CHUNK\x10kB;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
+	"\x19MESSAGE_TYPE_DELETE_CHUNK\x10kB=Z;github.com/slothhcommits/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_master_proto_rawDescOnce sync.Once

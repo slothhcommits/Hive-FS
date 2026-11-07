@@ -674,7 +674,7 @@ const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10^\x12)\n" +
 	"%MESSAGE_TYPE_CHUNK_REPLICATION_STREAM\x10_\x12\x1d\n" +
 	"\x19MESSAGE_TYPE_COMMIT_WRITE\x10`\x12\x1a\n" +
-	"\x16MESSAGE_TYPE_WRITE_ACK\x10aB;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
+	"\x16MESSAGE_TYPE_WRITE_ACK\x10aB=Z;github.com/slothhcommits/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_chunkserver_proto_rawDescOnce sync.Once

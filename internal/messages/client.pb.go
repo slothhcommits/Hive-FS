@@ -821,7 +821,7 @@ const file_gfs_v1_client_proto_rawDesc = "" +
 	"\x13MESSAGE_TYPE_DELETE\x10\b\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_READ_STREAM\x10\x1a\x12\"\n" +
 	"\x1eMESSAGE_TYPE_WRITE_DATA_STREAM\x10\x1b\x12\x1d\n" +
-	"\x19MESSAGE_TYPE_COMMIT_WRITE\x10\x1cB;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
+	"\x19MESSAGE_TYPE_COMMIT_WRITE\x10\x1cB=Z;github.com/slothhcommits/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_client_proto_rawDescOnce sync.Once

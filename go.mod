@@ -1,4 +1,4 @@
-module github.com/nerdySlothh/Hive-FS
+module github.com/slothhcommits/Hive-FS
 
 go 1.25.3
 
