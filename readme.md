@@ -17,3 +17,16 @@ Because file data never passes through the master, it doesn't become a bottlenec
 When a chunkserver dies, the master notices, finds the chunks that lost a copy, and has other servers re-copy them. Nothing is lost and nobody has to step in.
 
 ![Architecture diagram](./assets/Hive-FS-Architecture.png)
+
+## Features
+
+- **POSIX-like client interface** with a hierarchical namespace
+- **Directories work like in a normal file system.** Move, delete, snapshot or list an entire directory in a single metadata operation.
+- **64 MB chunks:** files are split into chunks and replicated across chunkservers.
+- **Checksummed storage:** every chunk carries 64 KB block checksums, verified on each chunk operation and scanned in the background by a scrubber.
+- **Snapshots** of files and directories using copy-on-write
+- **Atomic record append**
+- **Automatic re-replication** of chunks that lose a copy
+- **Lazy garbage collection** of deleted files
+- **Crash-tolerant master** with a replayable WAL and checkpoints
+- **Stale replica detection** through chunk version numbers
