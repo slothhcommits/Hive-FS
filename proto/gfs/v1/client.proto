@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package gfs.v1;
 
-option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
 
 // client message type range is 1 - 50
 message Client {
@@ -10,8 +10,8 @@ message Client {
     MESSAGE_TYPE_UNSPECIFIED = 0;
 
     // master message types
-    MESSAGE_TYPE_READ_FILE = 1;
-    MESSAGE_TYPE_CREATE_FILE = 2;
+    MESSAGE_TYPE_CREATE_FILE = 1;
+    MESSAGE_TYPE_READ_FILE = 2;
     MESSAGE_TYPE_CHUNK_REPLICAS = 3;
     MESSAGE_TYPE_SNAPSHOT = 5;
     MESSAGE_TYPE_MOVE = 6;
@@ -19,19 +19,21 @@ message Client {
     MESSAGE_TYPE_DELETE = 8;
 
     // chunkserver message types
-    MESSAGE_TYPE_DATA_STREAM = 26;
-    MESSAGE_TYPE_COMMIT_WRITE = 27;
+    MESSAGE_TYPE_READ_STREAM = 26;
+    MESSAGE_TYPE_WRITE_DATA_STREAM = 27;
+    MESSAGE_TYPE_COMMIT_WRITE = 28;
   }
 
   // master messages
+
+  message CreateFile {
+    string path = 1;
+  }
+
   message Read {
     string path = 1;
     uint32 idx = 2;
     uint32 count = 3;
-  }
-
-  message CreateFile {
-    string path = 1;
   }
 
   message GetChunkReplicas {
@@ -59,10 +61,32 @@ message Client {
   }
 
   // chunkserver messages
-  message StreamHeader {
-    uint32 seq_id = 1;
+
+  message ReadStreamMetadata {
+    uint64 chunk_id = 1;
+    uint32 version = 2;
+    int64 offset = 3;
+    uint32 length = 4;
+  }
+
+  message WriteStreamMetadata {
+    uint32 buffer_id = 1;
     uint64 chunk_id = 2;
-    string client_listen_addr = 3;
-    repeated string locations = 4;
+    int64 offset = 3;
+    uint32 size = 4;
+    string origin_addr = 5;
+    string peer_addr = 6;
+    repeated string forward_list = 7;
+  }
+
+  message Write {
+    uint32 buffer_id = 1;
+    uint64 chunk_id = 2;
+    int64 offset = 3;
+    repeated string secondaries = 4;
+  }
+
+  message WriteAck {
+    int64 offset = 1;
   }
 }
