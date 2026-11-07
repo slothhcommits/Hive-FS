@@ -25,18 +25,18 @@ type MessageType int32
 
 const (
 	MessageType_UNSPECIFIED MessageType = 0
-	MessageType_ACK         MessageType = 1
+	MessageType_ACK         MessageType = 200
 )
 
 // Enum value maps for MessageType.
 var (
 	MessageType_name = map[int32]string{
-		0: "UNSPECIFIED",
-		1: "ACK",
+		0:   "UNSPECIFIED",
+		200: "ACK",
 	}
 	MessageType_value = map[string]int32{
 		"UNSPECIFIED": 0,
-		"ACK":         1,
+		"ACK":         200,
 	}
 )
 
@@ -67,9 +67,137 @@ func (MessageType) EnumDescriptor() ([]byte, []int) {
 	return file_gfs_v1_common_proto_rawDescGZIP(), []int{0}
 }
 
+type Error_MessageType int32
+
+const (
+	Error_MESSAGE_TYPE_UNSPECIFIED Error_MessageType = 0
+	Error_MESSAGE_TYPE_ERROR       Error_MessageType = 199
+)
+
+// Enum value maps for Error_MessageType.
+var (
+	Error_MessageType_name = map[int32]string{
+		0:   "MESSAGE_TYPE_UNSPECIFIED",
+		199: "MESSAGE_TYPE_ERROR",
+	}
+	Error_MessageType_value = map[string]int32{
+		"MESSAGE_TYPE_UNSPECIFIED": 0,
+		"MESSAGE_TYPE_ERROR":       199,
+	}
+)
+
+func (x Error_MessageType) Enum() *Error_MessageType {
+	p := new(Error_MessageType)
+	*p = x
+	return p
+}
+
+func (x Error_MessageType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Error_MessageType) Descriptor() protoreflect.EnumDescriptor {
+	return file_gfs_v1_common_proto_enumTypes[1].Descriptor()
+}
+
+func (Error_MessageType) Type() protoreflect.EnumType {
+	return &file_gfs_v1_common_proto_enumTypes[1]
+}
+
+func (x Error_MessageType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Error_MessageType.Descriptor instead.
+func (Error_MessageType) EnumDescriptor() ([]byte, []int) {
+	return file_gfs_v1_common_proto_rawDescGZIP(), []int{1, 0}
+}
+
+type Error_Code int32
+
+const (
+	Error_CODE_UNSPECIFIED      Error_Code = 0
+	Error_CODE_UNMARSHAL_FAILED Error_Code = 151
+	Error_CODE_OP_FAILED        Error_Code = 152
+	Error_CODE_BAD_REQUEST      Error_Code = 162
+	Error_CODE_UNAVAILABLE      Error_Code = 156
+	Error_CODE_EXISTS           Error_Code = 159
+	Error_CODE_COLLISION        Error_Code = 160
+	Error_CODE_OVERFLOW         Error_Code = 154
+	Error_CODE_NOT_FOUND        Error_Code = 163
+	// chunkserver
+	Error_CODE_CHUNKSERVER_BUSY              Error_Code = 153
+	Error_CODE_CHUNKSERVER_STREAM_FAILED     Error_Code = 155
+	Error_CODE_CHUNKSERVER_LEASE_UNAVAILABLE Error_Code = 158
+	Error_CODE_CHUNKSERVER_INCONSISTENT      Error_Code = 161
+)
+
+// Enum value maps for Error_Code.
+var (
+	Error_Code_name = map[int32]string{
+		0:   "CODE_UNSPECIFIED",
+		151: "CODE_UNMARSHAL_FAILED",
+		152: "CODE_OP_FAILED",
+		162: "CODE_BAD_REQUEST",
+		156: "CODE_UNAVAILABLE",
+		159: "CODE_EXISTS",
+		160: "CODE_COLLISION",
+		154: "CODE_OVERFLOW",
+		163: "CODE_NOT_FOUND",
+		153: "CODE_CHUNKSERVER_BUSY",
+		155: "CODE_CHUNKSERVER_STREAM_FAILED",
+		158: "CODE_CHUNKSERVER_LEASE_UNAVAILABLE",
+		161: "CODE_CHUNKSERVER_INCONSISTENT",
+	}
+	Error_Code_value = map[string]int32{
+		"CODE_UNSPECIFIED":                   0,
+		"CODE_UNMARSHAL_FAILED":              151,
+		"CODE_OP_FAILED":                     152,
+		"CODE_BAD_REQUEST":                   162,
+		"CODE_UNAVAILABLE":                   156,
+		"CODE_EXISTS":                        159,
+		"CODE_COLLISION":                     160,
+		"CODE_OVERFLOW":                      154,
+		"CODE_NOT_FOUND":                     163,
+		"CODE_CHUNKSERVER_BUSY":              153,
+		"CODE_CHUNKSERVER_STREAM_FAILED":     155,
+		"CODE_CHUNKSERVER_LEASE_UNAVAILABLE": 158,
+		"CODE_CHUNKSERVER_INCONSISTENT":      161,
+	}
+)
+
+func (x Error_Code) Enum() *Error_Code {
+	p := new(Error_Code)
+	*p = x
+	return p
+}
+
+func (x Error_Code) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Error_Code) Descriptor() protoreflect.EnumDescriptor {
+	return file_gfs_v1_common_proto_enumTypes[2].Descriptor()
+}
+
+func (Error_Code) Type() protoreflect.EnumType {
+	return &file_gfs_v1_common_proto_enumTypes[2]
+}
+
+func (x Error_Code) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Error_Code.Descriptor instead.
+func (Error_Code) EnumDescriptor() ([]byte, []int) {
+	return file_gfs_v1_common_proto_rawDescGZIP(), []int{1, 1}
+}
+
 type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Err           *Error                 `protobuf:"bytes,2,opt,name=err,proto3" json:"err,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -111,16 +239,104 @@ func (x *Ack) GetSuccess() bool {
 	return false
 }
 
+func (x *Ack) GetErr() *Error {
+	if x != nil {
+		return x.Err
+	}
+	return nil
+}
+
+func (x *Ack) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type Error struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          Error_Code             `protobuf:"varint,1,opt,name=code,proto3,enum=gfs.v1.Error_Code" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Error) Reset() {
+	*x = Error{}
+	mi := &file_gfs_v1_common_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Error) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Error) ProtoMessage() {}
+
+func (x *Error) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_common_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Error.ProtoReflect.Descriptor instead.
+func (*Error) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_common_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Error) GetCode() Error_Code {
+	if x != nil {
+		return x.Code
+	}
+	return Error_CODE_UNSPECIFIED
+}
+
+func (x *Error) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_gfs_v1_common_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_common_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/common.proto\x12\x06gfs.v1\"\x1f\n" +
+	"\x13gfs/v1/common.proto\x12\x06gfs.v1\"T\n" +
 	"\x03Ack\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess*'\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1f\n" +
+	"\x03err\x18\x02 \x01(\v2\r.gfs.v1.ErrorR\x03err\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"\xeb\x03\n" +
+	"\x05Error\x12&\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x12.gfs.v1.Error.CodeR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"D\n" +
+	"\vMessageType\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x12MESSAGE_TYPE_ERROR\x10\xc7\x01\"\xd9\x02\n" +
+	"\x04Code\x12\x14\n" +
+	"\x10CODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x15CODE_UNMARSHAL_FAILED\x10\x97\x01\x12\x13\n" +
+	"\x0eCODE_OP_FAILED\x10\x98\x01\x12\x15\n" +
+	"\x10CODE_BAD_REQUEST\x10\xa2\x01\x12\x15\n" +
+	"\x10CODE_UNAVAILABLE\x10\x9c\x01\x12\x10\n" +
+	"\vCODE_EXISTS\x10\x9f\x01\x12\x13\n" +
+	"\x0eCODE_COLLISION\x10\xa0\x01\x12\x12\n" +
+	"\rCODE_OVERFLOW\x10\x9a\x01\x12\x13\n" +
+	"\x0eCODE_NOT_FOUND\x10\xa3\x01\x12\x1a\n" +
+	"\x15CODE_CHUNKSERVER_BUSY\x10\x99\x01\x12#\n" +
+	"\x1eCODE_CHUNKSERVER_STREAM_FAILED\x10\x9b\x01\x12'\n" +
+	"\"CODE_CHUNKSERVER_LEASE_UNAVAILABLE\x10\x9e\x01\x12\"\n" +
+	"\x1dCODE_CHUNKSERVER_INCONSISTENT\x10\xa1\x01*(\n" +
 	"\vMessageType\x12\x0f\n" +
-	"\vUNSPECIFIED\x10\x00\x12\a\n" +
-	"\x03ACK\x10\x01B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\vUNSPECIFIED\x10\x00\x12\b\n" +
+	"\x03ACK\x10\xc8\x01B;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_common_proto_rawDescOnce sync.Once
@@ -134,18 +350,23 @@ func file_gfs_v1_common_proto_rawDescGZIP() []byte {
 	return file_gfs_v1_common_proto_rawDescData
 }
 
-var file_gfs_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_gfs_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_gfs_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_gfs_v1_common_proto_goTypes = []any{
-	(MessageType)(0), // 0: gfs.v1.MessageType
-	(*Ack)(nil),      // 1: gfs.v1.Ack
+	(MessageType)(0),       // 0: gfs.v1.MessageType
+	(Error_MessageType)(0), // 1: gfs.v1.Error.MessageType
+	(Error_Code)(0),        // 2: gfs.v1.Error.Code
+	(*Ack)(nil),            // 3: gfs.v1.Ack
+	(*Error)(nil),          // 4: gfs.v1.Error
 }
 var file_gfs_v1_common_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: gfs.v1.Ack.err:type_name -> gfs.v1.Error
+	2, // 1: gfs.v1.Error.code:type_name -> gfs.v1.Error.Code
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_gfs_v1_common_proto_init() }
@@ -158,8 +379,8 @@ func file_gfs_v1_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_common_proto_rawDesc), len(file_gfs_v1_common_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   1,
+			NumEnums:      3,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

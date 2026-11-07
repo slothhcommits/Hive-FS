@@ -33,10 +33,6 @@ const (
 	Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK Master_MessageType = 105
 	Master_MESSAGE_TYPE_REPLICATE_CHUNK  Master_MessageType = 106
 	Master_MESSAGE_TYPE_DELETE_CHUNK     Master_MessageType = 107
-	// client message types
-	Master_MESSAGE_TYPE_FILE           Master_MessageType = 126
-	Master_MESSAGE_TYPE_CHUNK_REPLICAS Master_MessageType = 127
-	Master_MESSAGE_TYPE_SUBTREE        Master_MessageType = 128
 )
 
 // Enum value maps for Master_MessageType.
@@ -50,9 +46,6 @@ var (
 		105: "MESSAGE_TYPE_LOCAL_COPY_CHUNK",
 		106: "MESSAGE_TYPE_REPLICATE_CHUNK",
 		107: "MESSAGE_TYPE_DELETE_CHUNK",
-		126: "MESSAGE_TYPE_FILE",
-		127: "MESSAGE_TYPE_CHUNK_REPLICAS",
-		128: "MESSAGE_TYPE_SUBTREE",
 	}
 	Master_MessageType_value = map[string]int32{
 		"MESSAGE_TYPE_UNSPECIFIED":      0,
@@ -63,9 +56,6 @@ var (
 		"MESSAGE_TYPE_LOCAL_COPY_CHUNK": 105,
 		"MESSAGE_TYPE_REPLICATE_CHUNK":  106,
 		"MESSAGE_TYPE_DELETE_CHUNK":     107,
-		"MESSAGE_TYPE_FILE":             126,
-		"MESSAGE_TYPE_CHUNK_REPLICAS":   127,
-		"MESSAGE_TYPE_SUBTREE":          128,
 	}
 )
 
@@ -548,6 +538,7 @@ type Master_Chunk struct {
 	Primary       string                 `protobuf:"bytes,3,opt,name=primary,proto3" json:"primary,omitempty"`
 	LeaseExpiry   int64                  `protobuf:"varint,4,opt,name=lease_expiry,json=leaseExpiry,proto3" json:"lease_expiry,omitempty"`
 	Locations     []string               `protobuf:"bytes,5,rep,name=locations,proto3" json:"locations,omitempty"`
+	ChunkIdx      uint32                 `protobuf:"varint,6,opt,name=chunk_idx,json=chunkIdx,proto3" json:"chunk_idx,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -615,6 +606,13 @@ func (x *Master_Chunk) GetLocations() []string {
 		return x.Locations
 	}
 	return nil
+}
+
+func (x *Master_Chunk) GetChunkIdx() uint32 {
+	if x != nil {
+		return x.ChunkIdx
+	}
+	return 0
 }
 
 type Master_Subtree struct {
@@ -1045,7 +1043,7 @@ var File_gfs_v1_master_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_master_proto_rawDesc = "" +
 	"\n" +
-	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\x97\r\n" +
+	"\x13gfs/v1/master.proto\x12\x06gfs.v1\"\xe1\f\n" +
 	"\x06Master\x1a\xb1\x01\n" +
 	"\fHeartbeatRes\x12\x16\n" +
 	"\x06delete\x18\x01 \x03(\x04R\x06delete\x12!\n" +
@@ -1070,13 +1068,14 @@ const file_gfs_v1_master_proto_rawDesc = "" +
 	"\vDeleteChunk\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\x04R\x06handle\x1a4\n" +
 	"\x04File\x12,\n" +
-	"\x06chunks\x18\x01 \x03(\v2\x14.gfs.v1.Master.ChunkR\x06chunks\x1a\x97\x01\n" +
+	"\x06chunks\x18\x01 \x03(\v2\x14.gfs.v1.Master.ChunkR\x06chunks\x1a\xb4\x01\n" +
 	"\x05Chunk\x12\x19\n" +
 	"\bchunk_id\x18\x01 \x01(\x04R\achunkId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\x12\x18\n" +
 	"\aprimary\x18\x03 \x01(\tR\aprimary\x12!\n" +
 	"\flease_expiry\x18\x04 \x01(\x03R\vleaseExpiry\x12\x1c\n" +
-	"\tlocations\x18\x05 \x03(\tR\tlocations\x1a%\n" +
+	"\tlocations\x18\x05 \x03(\tR\tlocations\x12\x1b\n" +
+	"\tchunk_idx\x18\x06 \x01(\rR\bchunkIdx\x1a%\n" +
 	"\aSubtree\x12\x1a\n" +
 	"\bcontents\x18\x01 \x03(\tR\bcontents\x1a6\n" +
 	"\x03Log\x12/\n" +
@@ -1104,7 +1103,7 @@ const file_gfs_v1_master_proto_rawDesc = "" +
 	"\x03ref\x18\x01 \x01(\rR\x03ref\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\x12\x1d\n" +
 	"\n" +
-	"rep_factor\x18\x03 \x01(\rR\trepFactor\"\xdf\x02\n" +
+	"rep_factor\x18\x03 \x01(\rR\trepFactor\"\x8c\x02\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aMESSAGE_TYPE_HEARTBEAT_RES\x10e\x12\x1f\n" +
@@ -1113,10 +1112,7 @@ const file_gfs_v1_master_proto_rawDesc = "" +
 	"\x19MESSAGE_TYPE_REVOKE_LEASE\x10h\x12!\n" +
 	"\x1dMESSAGE_TYPE_LOCAL_COPY_CHUNK\x10i\x12 \n" +
 	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10j\x12\x1d\n" +
-	"\x19MESSAGE_TYPE_DELETE_CHUNK\x10k\x12\x15\n" +
-	"\x11MESSAGE_TYPE_FILE\x10~\x12\x1f\n" +
-	"\x1bMESSAGE_TYPE_CHUNK_REPLICAS\x10\x7f\x12\x19\n" +
-	"\x14MESSAGE_TYPE_SUBTREE\x10\x80\x01B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x19MESSAGE_TYPE_DELETE_CHUNK\x10kB;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_master_proto_rawDescOnce sync.Once

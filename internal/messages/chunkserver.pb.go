@@ -27,10 +27,16 @@ const (
 	Chunkserver_MESSAGE_TYPE_UNSPECIFIED Chunkserver_MessageType = 0
 	// master message types
 	Chunkserver_MESSAGE_TYPE_HEARTBEAT Chunkserver_MessageType = 51
+	// client message types
+	Chunkserver_MESSAGE_TYPE_READ_STREAM Chunkserver_MessageType = 61
 	// chunkserver message types
-	Chunkserver_MESSAGE_TYPE_PING            Chunkserver_MessageType = 91
-	Chunkserver_MESSAGE_TYPE_DATA_STREAM     Chunkserver_MessageType = 92
-	Chunkserver_MESSAGE_TYPE_REPLICATE_CHUNK Chunkserver_MessageType = 93
+	Chunkserver_MESSAGE_TYPE_PING                     Chunkserver_MessageType = 91
+	Chunkserver_MESSAGE_TYPE_DATA_STREAM              Chunkserver_MessageType = 92
+	Chunkserver_MESSAGE_TYPE_DROP_BUFFER              Chunkserver_MessageType = 93
+	Chunkserver_MESSAGE_TYPE_REPLICATE_CHUNK          Chunkserver_MessageType = 94
+	Chunkserver_MESSAGE_TYPE_CHUNK_REPLICATION_STREAM Chunkserver_MessageType = 95
+	Chunkserver_MESSAGE_TYPE_COMMIT_WRITE             Chunkserver_MessageType = 96
+	Chunkserver_MESSAGE_TYPE_WRITE_ACK                Chunkserver_MessageType = 97
 )
 
 // Enum value maps for Chunkserver_MessageType.
@@ -38,16 +44,26 @@ var (
 	Chunkserver_MessageType_name = map[int32]string{
 		0:  "MESSAGE_TYPE_UNSPECIFIED",
 		51: "MESSAGE_TYPE_HEARTBEAT",
+		61: "MESSAGE_TYPE_READ_STREAM",
 		91: "MESSAGE_TYPE_PING",
 		92: "MESSAGE_TYPE_DATA_STREAM",
-		93: "MESSAGE_TYPE_REPLICATE_CHUNK",
+		93: "MESSAGE_TYPE_DROP_BUFFER",
+		94: "MESSAGE_TYPE_REPLICATE_CHUNK",
+		95: "MESSAGE_TYPE_CHUNK_REPLICATION_STREAM",
+		96: "MESSAGE_TYPE_COMMIT_WRITE",
+		97: "MESSAGE_TYPE_WRITE_ACK",
 	}
 	Chunkserver_MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNSPECIFIED":     0,
-		"MESSAGE_TYPE_HEARTBEAT":       51,
-		"MESSAGE_TYPE_PING":            91,
-		"MESSAGE_TYPE_DATA_STREAM":     92,
-		"MESSAGE_TYPE_REPLICATE_CHUNK": 93,
+		"MESSAGE_TYPE_UNSPECIFIED":              0,
+		"MESSAGE_TYPE_HEARTBEAT":                51,
+		"MESSAGE_TYPE_READ_STREAM":              61,
+		"MESSAGE_TYPE_PING":                     91,
+		"MESSAGE_TYPE_DATA_STREAM":              92,
+		"MESSAGE_TYPE_DROP_BUFFER":              93,
+		"MESSAGE_TYPE_REPLICATE_CHUNK":          94,
+		"MESSAGE_TYPE_CHUNK_REPLICATION_STREAM": 95,
+		"MESSAGE_TYPE_COMMIT_WRITE":             96,
+		"MESSAGE_TYPE_WRITE_ACK":                97,
 	}
 )
 
@@ -236,30 +252,27 @@ func (x *Chunkserver_Heartbeat) GetChunks() []*Chunkserver_ChunkInfo {
 	return nil
 }
 
-// client messages
-type Chunkserver_StreamFailed struct {
+type Chunkserver_ReadStream struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SeqId         uint32                 `protobuf:"varint,1,opt,name=seq_id,json=seqId,proto3" json:"seq_id,omitempty"`
-	ChunkId       uint64                 `protobuf:"varint,2,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	Length        uint32                 `protobuf:"varint,1,opt,name=length,proto3" json:"length,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Chunkserver_StreamFailed) Reset() {
-	*x = Chunkserver_StreamFailed{}
+func (x *Chunkserver_ReadStream) Reset() {
+	*x = Chunkserver_ReadStream{}
 	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Chunkserver_StreamFailed) String() string {
+func (x *Chunkserver_ReadStream) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Chunkserver_StreamFailed) ProtoMessage() {}
+func (*Chunkserver_ReadStream) ProtoMessage() {}
 
-func (x *Chunkserver_StreamFailed) ProtoReflect() protoreflect.Message {
+func (x *Chunkserver_ReadStream) ProtoReflect() protoreflect.Message {
 	mi := &file_gfs_v1_chunkserver_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -271,37 +284,351 @@ func (x *Chunkserver_StreamFailed) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Chunkserver_StreamFailed.ProtoReflect.Descriptor instead.
-func (*Chunkserver_StreamFailed) Descriptor() ([]byte, []int) {
+// Deprecated: Use Chunkserver_ReadStream.ProtoReflect.Descriptor instead.
+func (*Chunkserver_ReadStream) Descriptor() ([]byte, []int) {
 	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 2}
 }
 
-func (x *Chunkserver_StreamFailed) GetSeqId() uint32 {
+func (x *Chunkserver_ReadStream) GetLength() uint32 {
 	if x != nil {
-		return x.SeqId
+		return x.Length
 	}
 	return 0
 }
 
-func (x *Chunkserver_StreamFailed) GetChunkId() uint64 {
+type Chunkserver_DropBuffer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BufferId      uint32                 `protobuf:"varint,1,opt,name=buffer_id,json=bufferId,proto3" json:"buffer_id,omitempty"`
+	ChunkId       uint64                 `protobuf:"varint,2,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_DropBuffer) Reset() {
+	*x = Chunkserver_DropBuffer{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_DropBuffer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_DropBuffer) ProtoMessage() {}
+
+func (x *Chunkserver_DropBuffer) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_DropBuffer.ProtoReflect.Descriptor instead.
+func (*Chunkserver_DropBuffer) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 3}
+}
+
+func (x *Chunkserver_DropBuffer) GetBufferId() uint32 {
+	if x != nil {
+		return x.BufferId
+	}
+	return 0
+}
+
+func (x *Chunkserver_DropBuffer) GetChunkId() uint64 {
 	if x != nil {
 		return x.ChunkId
 	}
 	return 0
 }
 
-func (x *Chunkserver_StreamFailed) GetError() string {
+type Chunkserver_Write struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BufferId      uint32                 `protobuf:"varint,1,opt,name=buffer_id,json=bufferId,proto3" json:"buffer_id,omitempty"`
+	ChunkId       uint64                 `protobuf:"varint,2,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
+	Offset        int64                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	Sr            uint64                 `protobuf:"varint,4,opt,name=sr,proto3" json:"sr,omitempty"`
+	PadLength     uint32                 `protobuf:"varint,5,opt,name=pad_length,json=padLength,proto3" json:"pad_length,omitempty"`
+	Version       uint32                 `protobuf:"varint,6,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_Write) Reset() {
+	*x = Chunkserver_Write{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_Write) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_Write) ProtoMessage() {}
+
+func (x *Chunkserver_Write) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[5]
 	if x != nil {
-		return x.Error
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_Write.ProtoReflect.Descriptor instead.
+func (*Chunkserver_Write) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 4}
+}
+
+func (x *Chunkserver_Write) GetBufferId() uint32 {
+	if x != nil {
+		return x.BufferId
+	}
+	return 0
+}
+
+func (x *Chunkserver_Write) GetChunkId() uint64 {
+	if x != nil {
+		return x.ChunkId
+	}
+	return 0
+}
+
+func (x *Chunkserver_Write) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *Chunkserver_Write) GetSr() uint64 {
+	if x != nil {
+		return x.Sr
+	}
+	return 0
+}
+
+func (x *Chunkserver_Write) GetPadLength() uint32 {
+	if x != nil {
+		return x.PadLength
+	}
+	return 0
+}
+
+func (x *Chunkserver_Write) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type Chunkserver_WriteError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_WriteError) Reset() {
+	*x = Chunkserver_WriteError{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_WriteError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_WriteError) ProtoMessage() {}
+
+func (x *Chunkserver_WriteError) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_WriteError.ProtoReflect.Descriptor instead.
+func (*Chunkserver_WriteError) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 5}
+}
+
+func (x *Chunkserver_WriteError) GetMessage() string {
+	if x != nil {
+		return x.Message
 	}
 	return ""
+}
+
+type Chunkserver_WriteAck struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Success       bool                    `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Err           *Chunkserver_WriteError `protobuf:"bytes,2,opt,name=err,proto3" json:"err,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_WriteAck) Reset() {
+	*x = Chunkserver_WriteAck{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_WriteAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_WriteAck) ProtoMessage() {}
+
+func (x *Chunkserver_WriteAck) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_WriteAck.ProtoReflect.Descriptor instead.
+func (*Chunkserver_WriteAck) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 6}
+}
+
+func (x *Chunkserver_WriteAck) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *Chunkserver_WriteAck) GetErr() *Chunkserver_WriteError {
+	if x != nil {
+		return x.Err
+	}
+	return nil
+}
+
+type Chunkserver_ChunkReplicationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        uint64                 `protobuf:"varint,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Version       uint32                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_ChunkReplicationRequest) Reset() {
+	*x = Chunkserver_ChunkReplicationRequest{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_ChunkReplicationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_ChunkReplicationRequest) ProtoMessage() {}
+
+func (x *Chunkserver_ChunkReplicationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_ChunkReplicationRequest.ProtoReflect.Descriptor instead.
+func (*Chunkserver_ChunkReplicationRequest) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 7}
+}
+
+func (x *Chunkserver_ChunkReplicationRequest) GetHandle() uint64 {
+	if x != nil {
+		return x.Handle
+	}
+	return 0
+}
+
+func (x *Chunkserver_ChunkReplicationRequest) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type Chunkserver_ChunkReplicationStream struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Length        uint32                 `protobuf:"varint,1,opt,name=length,proto3" json:"length,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunkserver_ChunkReplicationStream) Reset() {
+	*x = Chunkserver_ChunkReplicationStream{}
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunkserver_ChunkReplicationStream) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunkserver_ChunkReplicationStream) ProtoMessage() {}
+
+func (x *Chunkserver_ChunkReplicationStream) ProtoReflect() protoreflect.Message {
+	mi := &file_gfs_v1_chunkserver_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunkserver_ChunkReplicationStream.ProtoReflect.Descriptor instead.
+func (*Chunkserver_ChunkReplicationStream) Descriptor() ([]byte, []int) {
+	return file_gfs_v1_chunkserver_proto_rawDescGZIP(), []int{0, 8}
+}
+
+func (x *Chunkserver_ChunkReplicationStream) GetLength() uint32 {
+	if x != nil {
+		return x.Length
+	}
+	return 0
 }
 
 var File_gfs_v1_chunkserver_proto protoreflect.FileDescriptor
 
 const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\n" +
-	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\"\xd5\x03\n" +
+	"\x18gfs/v1/chunkserver.proto\x12\x06gfs.v1\x1a\x13gfs/v1/common.proto\"\xad\b\n" +
 	"\vChunkserver\x1aX\n" +
 	"\tChunkInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
@@ -310,17 +637,44 @@ const file_gfs_v1_chunkserver_proto_rawDesc = "" +
 	"\tHeartbeat\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x1b\n" +
 	"\tdisk_util\x18\x02 \x01(\rR\bdiskUtil\x125\n" +
-	"\x06chunks\x18\x03 \x03(\v2\x1d.gfs.v1.Chunkserver.ChunkInfoR\x06chunks\x1aV\n" +
-	"\fStreamFailed\x12\x15\n" +
-	"\x06seq_id\x18\x01 \x01(\rR\x05seqId\x12\x19\n" +
-	"\bchunk_id\x18\x02 \x01(\x04R\achunkId\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\x9e\x01\n" +
+	"\x06chunks\x18\x03 \x03(\v2\x1d.gfs.v1.Chunkserver.ChunkInfoR\x06chunks\x1a$\n" +
+	"\n" +
+	"ReadStream\x12\x16\n" +
+	"\x06length\x18\x01 \x01(\rR\x06length\x1aD\n" +
+	"\n" +
+	"DropBuffer\x12\x1b\n" +
+	"\tbuffer_id\x18\x01 \x01(\rR\bbufferId\x12\x19\n" +
+	"\bchunk_id\x18\x02 \x01(\x04R\achunkId\x1a\xa0\x01\n" +
+	"\x05Write\x12\x1b\n" +
+	"\tbuffer_id\x18\x01 \x01(\rR\bbufferId\x12\x19\n" +
+	"\bchunk_id\x18\x02 \x01(\x04R\achunkId\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x03R\x06offset\x12\x0e\n" +
+	"\x02sr\x18\x04 \x01(\x04R\x02sr\x12\x1d\n" +
+	"\n" +
+	"pad_length\x18\x05 \x01(\rR\tpadLength\x12\x18\n" +
+	"\aversion\x18\x06 \x01(\rR\aversion\x1a&\n" +
+	"\n" +
+	"WriteError\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x1aV\n" +
+	"\bWriteAck\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x120\n" +
+	"\x03err\x18\x02 \x01(\v2\x1e.gfs.v1.Chunkserver.WriteErrorR\x03err\x1aK\n" +
+	"\x17ChunkReplicationRequest\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\x04R\x06handle\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\rR\aversion\x1a0\n" +
+	"\x16ChunkReplicationStream\x12\x16\n" +
+	"\x06length\x18\x01 \x01(\rR\x06length\"\xc0\x02\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16MESSAGE_TYPE_HEARTBEAT\x103\x12\x15\n" +
+	"\x16MESSAGE_TYPE_HEARTBEAT\x103\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_READ_STREAM\x10=\x12\x15\n" +
 	"\x11MESSAGE_TYPE_PING\x10[\x12\x1c\n" +
-	"\x18MESSAGE_TYPE_DATA_STREAM\x10\\\x12 \n" +
-	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10]B8Z6github.com/PraveenC2002/gfs/internal/messages;messagesb\x06proto3"
+	"\x18MESSAGE_TYPE_DATA_STREAM\x10\\\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_DROP_BUFFER\x10]\x12 \n" +
+	"\x1cMESSAGE_TYPE_REPLICATE_CHUNK\x10^\x12)\n" +
+	"%MESSAGE_TYPE_CHUNK_REPLICATION_STREAM\x10_\x12\x1d\n" +
+	"\x19MESSAGE_TYPE_COMMIT_WRITE\x10`\x12\x1a\n" +
+	"\x16MESSAGE_TYPE_WRITE_ACK\x10aB;Z9github.com/nerdySlothh/Hive-FS/internal/messages;messagesb\x06proto3"
 
 var (
 	file_gfs_v1_chunkserver_proto_rawDescOnce sync.Once
@@ -335,21 +689,28 @@ func file_gfs_v1_chunkserver_proto_rawDescGZIP() []byte {
 }
 
 var file_gfs_v1_chunkserver_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_gfs_v1_chunkserver_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_gfs_v1_chunkserver_proto_goTypes = []any{
-	(Chunkserver_MessageType)(0),     // 0: gfs.v1.Chunkserver.MessageType
-	(*Chunkserver)(nil),              // 1: gfs.v1.Chunkserver
-	(*Chunkserver_ChunkInfo)(nil),    // 2: gfs.v1.Chunkserver.ChunkInfo
-	(*Chunkserver_Heartbeat)(nil),    // 3: gfs.v1.Chunkserver.Heartbeat
-	(*Chunkserver_StreamFailed)(nil), // 4: gfs.v1.Chunkserver.StreamFailed
+	(Chunkserver_MessageType)(0),                // 0: gfs.v1.Chunkserver.MessageType
+	(*Chunkserver)(nil),                         // 1: gfs.v1.Chunkserver
+	(*Chunkserver_ChunkInfo)(nil),               // 2: gfs.v1.Chunkserver.ChunkInfo
+	(*Chunkserver_Heartbeat)(nil),               // 3: gfs.v1.Chunkserver.Heartbeat
+	(*Chunkserver_ReadStream)(nil),              // 4: gfs.v1.Chunkserver.ReadStream
+	(*Chunkserver_DropBuffer)(nil),              // 5: gfs.v1.Chunkserver.DropBuffer
+	(*Chunkserver_Write)(nil),                   // 6: gfs.v1.Chunkserver.Write
+	(*Chunkserver_WriteError)(nil),              // 7: gfs.v1.Chunkserver.WriteError
+	(*Chunkserver_WriteAck)(nil),                // 8: gfs.v1.Chunkserver.WriteAck
+	(*Chunkserver_ChunkReplicationRequest)(nil), // 9: gfs.v1.Chunkserver.ChunkReplicationRequest
+	(*Chunkserver_ChunkReplicationStream)(nil),  // 10: gfs.v1.Chunkserver.ChunkReplicationStream
 }
 var file_gfs_v1_chunkserver_proto_depIdxs = []int32{
 	2, // 0: gfs.v1.Chunkserver.Heartbeat.chunks:type_name -> gfs.v1.Chunkserver.ChunkInfo
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	7, // 1: gfs.v1.Chunkserver.WriteAck.err:type_name -> gfs.v1.Chunkserver.WriteError
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_gfs_v1_chunkserver_proto_init() }
@@ -357,13 +718,14 @@ func file_gfs_v1_chunkserver_proto_init() {
 	if File_gfs_v1_chunkserver_proto != nil {
 		return
 	}
+	file_gfs_v1_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gfs_v1_chunkserver_proto_rawDesc), len(file_gfs_v1_chunkserver_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   4,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
