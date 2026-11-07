@@ -1,9 +1,8 @@
 package hive
 
 import (
+	"context"
 	"errors"
-	"io"
-	"log"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -15,8 +14,8 @@ type Transport interface {
 	ListenAndAccept(addr string) error
 	Consume() <-chan Request
 	Streams() <-chan *Stream
-	Dial(addr string) (Peer, error)
-	OpenStream(string, time.Duration, Metadata) (io.WriteCloser, error)
+	Dial(ctx context.Context, addr string) (Peer, error)
+	OpenStream(context.Context, string, *Message) (*Stream, error)
 	Close() error
 }
 
@@ -26,8 +25,8 @@ type Request interface {
 }
 
 type Peer interface {
-	Send(*Message) error
-	Request(*Message) (<-chan *Message, error)
+	Send(context.Context, *Message) error
+	Request(context.Context, *Message) (<-chan *Message, error)
 	Unregister(msg *Message)
 	RemoteAddr() string
 	Close() error
@@ -39,10 +38,25 @@ type connection struct {
 	isStream atomic.Bool
 }
 
-func (c *connection) write(msg *Message) error {
+// write is bounded by the earlier of writeDeadline and ctx's deadline, a nil ctx
+// only gets writeDeadline. A ctx that ran out while waiting for mu returns
+// ctx.Err() without touching the connection.
+func (c *connection) write(ctx context.Context, msg *Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
+
+	deadline := time.Now().Add(writeDeadline)
+
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+			deadline = d
+		}
+	}
+
+	c.conn.SetWriteDeadline(deadline)
 	return writeFrame(c.conn, msg)
 }
 
@@ -53,7 +67,7 @@ type Inbound struct {
 
 func (i *Inbound) Respond(msg *Message) error {
 	msg.reqID = i.msg.reqID
-	return i.write(msg)
+	return i.write(nil, msg)
 }
 
 func (i *Inbound) Message() *Message {
@@ -76,6 +90,10 @@ func randUINT32() uint32 {
 
 type OutboundPeer struct {
 	*connection
+
+	// evicts this peer from the transport's cache, set by Dial
+	drop func()
+
 	pendingMu sync.Mutex
 	pending   map[uint32]chan *Message
 }
@@ -114,17 +132,36 @@ func (op *OutboundPeer) Unregister(msg *Message) {
 	op.pendingMu.Unlock()
 }
 
-func (op *OutboundPeer) Send(msg *Message) error {
+func (op *OutboundPeer) Send(ctx context.Context, msg *Message) error {
+
+	// fire and forget still gets a short ceiling
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), sendTimeout)
+		defer cancel()
+	}
+
 	msg.reqID = noReplyReqID
-	return op.connection.write(msg)
+	if err := op.connection.write(ctx, msg); err != nil {
+		// a ctx that ran out before the write started left the connection untouched
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			op.drop()
+		}
+		return err
+	}
+	return nil
 }
 
-func (op *OutboundPeer) Request(msg *Message) (<-chan *Message, error) {
+func (op *OutboundPeer) Request(ctx context.Context, msg *Message) (<-chan *Message, error) {
 	id, ch := op.register()
 	msg.reqID = id
 
-	if err := op.write(msg); err != nil {
+	if err := op.connection.write(ctx, msg); err != nil {
 		op.Unregister(msg)
+		// a ctx that ran out before the write started left the connection untouched
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			op.drop()
+		}
 		return nil, err
 	}
 	return ch, nil
@@ -176,14 +213,15 @@ func (op *OutboundPeer) Close() error {
 
 const (
 	dialTimeout   = 2 * time.Second
+	sendTimeout   = 2 * time.Second
 	readDeadline  = 60 * time.Second
 	writeDeadline = 10 * time.Second
 )
 
 type TCPTransport struct {
-	obMu          sync.Mutex
-	outboundPeers map[string]*OutboundPeer
-	listening     bool
+	outboundPeersMu sync.Mutex
+	outboundPeers   map[string]*OutboundPeer
+	listening       bool
 
 	Messages  chan Request
 	StreamsCh chan *Stream
@@ -218,19 +256,19 @@ func NewTCPTransport() *TCPTransport {
 
 func (t *TCPTransport) ListenAndAccept(addr string) error {
 
-	t.obMu.Lock()
+	t.outboundPeersMu.Lock()
 	select {
 	case <-t.shutdown:
-		t.obMu.Unlock()
+		t.outboundPeersMu.Unlock()
 		return &ErrConnClosed{}
 	default:
 	}
 	if t.listening {
-		t.obMu.Unlock()
+		t.outboundPeersMu.Unlock()
 		return errors.New("already listening")
 	}
 	t.listening = true
-	t.obMu.Unlock()
+	t.outboundPeersMu.Unlock()
 
 	// Close waits for this before releasing the base reference, so no reader
 	// can be spawned after the counter reaches zero.
@@ -347,28 +385,56 @@ func (t *TCPTransport) Dial(ctx context.Context, addr string) (Peer, error) {
 	}
 	key := tcpAddr.String()
 
-	t.obMu.Lock()
-	defer t.obMu.Unlock()
+	t.outboundPeersMu.Lock()
 
 	select {
 	case <-t.shutdown:
+		t.outboundPeersMu.Unlock()
 		return nil, &ErrConnClosed{}
 	default:
 	}
 
 	if peer, ok := t.outboundPeers[key]; ok {
+		// a handed out peer must not hit the idle deadline right away
+		peer.conn.SetReadDeadline(time.Now().Add(readDeadline))
+		t.outboundPeersMu.Unlock()
 		return peer, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", key, dialTimeout)
+	t.outboundPeersMu.Unlock()
+
+	// callers with a ctx own the dial timeout, a nil ctx still gets a ceiling
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), dialTimeout)
+		defer cancel()
+	}
+
+	var d net.Dialer
+
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	peer := newOutboundPeer(conn)
-	t.outboundPeers[key] = peer
-	t.wg.Add(1)
-	go t.readOutbound(peer)
+	var peer *OutboundPeer
+
+	t.outboundPeersMu.Lock()
+
+	if cachedPeer, ok := t.outboundPeers[key]; ok {
+		conn.Close()
+		peer = cachedPeer
+		peer.conn.SetReadDeadline(time.Now().Add(readDeadline))
+	} else {
+		peer = newOutboundPeer(conn)
+		peer.drop = func() { t.dropOutbound(peer) }
+		t.outboundPeers[key] = peer
+		t.wg.Add(1)
+		go t.readOutbound(peer)
+	}
+
+	t.outboundPeersMu.Unlock()
+
 	return peer, nil
 }
 
@@ -378,8 +444,6 @@ func (t *TCPTransport) Dial(ctx context.Context, addr string) (Peer, error) {
 func (t *TCPTransport) readOutbound(peer *OutboundPeer) {
 
 	defer t.wg.Done()
-	defer peer.Close()
-	defer t.dropOutbound(peer.RemoteAddr())
 
 	returnCtxWatcher := make(chan struct{}, 1)
 	defer func() { returnCtxWatcher <- struct{}{} }()
@@ -402,14 +466,16 @@ func (t *TCPTransport) readOutbound(peer *OutboundPeer) {
 
 		err := validateProtocol(conn, msg)
 		if err != nil {
-			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			// log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			t.dropOutbound(peer)
 			return
 		}
 
 		err = readPayload(conn, msg)
 		if err != nil {
 			t.writeError(peer.connection, msg, err)
-			log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			// log.Printf("peer %s error : %s", conn.RemoteAddr().String(), err.Error())
+			t.dropOutbound(peer)
 			return
 		}
 
@@ -469,7 +535,7 @@ func (t *TCPTransport) Close() error {
 
 		close(t.shutdown)
 
-		t.obMu.Lock()
+		t.outboundPeersMu.Lock()
 		listening := t.listening
 		for key, obp := range t.outboundPeers {
 			if cerr := obp.Close(); cerr != nil && err == nil {
@@ -477,7 +543,7 @@ func (t *TCPTransport) Close() error {
 			}
 			delete(t.outboundPeers, key)
 		}
-		t.obMu.Unlock()
+		t.outboundPeersMu.Unlock()
 
 		// the accept loop must be gone before the base reference is dropped
 		if listening {
@@ -500,7 +566,7 @@ func (t *TCPTransport) writeError(c *connection, msg *Message, err error) {
 
 		var protocErr ProtocolErr
 		if errors.As(err, &protocErr) {
-			c.write(&Message{
+			c.write(nil, &Message{
 				Metadata: Metadata{
 					Type: uint8(protocErr.code()),
 					Size: uint32(len(protocErr.payload())),
