@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package gfs.v1;
 
-option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+import "gfs/v1/common.proto";
+
+option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
 
 // chunkserver message range is 51 - 100
 message Chunkserver {
@@ -13,11 +15,16 @@ message Chunkserver {
     MESSAGE_TYPE_HEARTBEAT = 51;
 
     // client message types
+    MESSAGE_TYPE_READ_STREAM = 61;
 
     // chunkserver message types
     MESSAGE_TYPE_PING = 91;
     MESSAGE_TYPE_DATA_STREAM = 92;
-    MESSAGE_TYPE_REPLICATE_CHUNK = 93;
+    MESSAGE_TYPE_DROP_BUFFER = 93;
+    MESSAGE_TYPE_REPLICATE_CHUNK = 94;
+    MESSAGE_TYPE_CHUNK_REPLICATION_STREAM = 95;
+    MESSAGE_TYPE_COMMIT_WRITE = 96;
+    MESSAGE_TYPE_WRITE_ACK = 97;
   }
 
   // master messages
@@ -34,9 +41,44 @@ message Chunkserver {
   }
 
   // client messages
-  message StreamFailed {
-  	uint32 seq_id = 1;
-   	uint64 chunk_id = 2;
-    string error = 3;
+
+  message ReadStream {
+    uint32 length = 1;
   }
+
+  // chunkserver messages
+
+  message DropBuffer {
+    uint32 buffer_id = 1;
+    uint64 chunk_id = 2;
+  }
+
+  message Write {
+    uint32 buffer_id = 1;
+    uint64 chunk_id = 2;
+    int64 offset = 3;
+    uint64 sr = 4;
+    uint32 pad_length = 5;
+    uint32 version = 6;
+  }
+
+  message WriteError {
+    string message = 1;
+  }
+
+  message WriteAck {
+    bool success = 1;
+    Chunkserver.WriteError err = 2;
+  }
+
+  message ChunkReplicationRequest {
+    uint64 handle = 1;
+    uint32 version = 2;
+  }
+
+  message ChunkReplicationStream {
+    uint32 length = 1;
+  }
+
+  // persisted
 }
