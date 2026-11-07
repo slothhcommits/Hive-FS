@@ -130,6 +130,11 @@ func (e *ErrInvalidProtocol) payload() []byte { return []byte{} }
 
 func (e *ErrInvalidProtocol) code() ProtocolErrCode { return InvalidProtocol }
 
+func (e *ErrInvalidProtocol) Is(target error) bool {
+	_, ok := target.(*ErrInvalidProtocol)
+	return ok
+}
+
 type ErrUnsupportedVersion struct{}
 
 func (e *ErrUnsupportedVersion) Error() string {
@@ -140,6 +145,11 @@ func (e *ErrUnsupportedVersion) payload() []byte { return []byte{} }
 
 func (e *ErrUnsupportedVersion) code() ProtocolErrCode { return UnsupportedVersion }
 
+func (e *ErrUnsupportedVersion) Is(target error) bool {
+	_, ok := target.(*ErrUnsupportedVersion)
+	return ok
+}
+
 type ErrPayloadTooLarge struct{}
 
 func (e *ErrPayloadTooLarge) Error() string {
@@ -149,6 +159,13 @@ func (e *ErrPayloadTooLarge) Error() string {
 func (e *ErrPayloadTooLarge) payload() []byte { return []byte{} }
 
 func (e *ErrPayloadTooLarge) code() ProtocolErrCode { return PayloadTooLarge }
+
+func (e *ErrPayloadTooLarge) Is(target error) bool {
+	_, ok := target.(*ErrPayloadTooLarge)
+	return ok
+}
+
+var ErrSizeMismatch = errors.New("size field and payload length are unequal")
 
 func makeHeader(msg *Message) []byte {
 
@@ -165,14 +182,14 @@ func makeHeader(msg *Message) []byte {
 	return buf
 }
 
-func writeFrame(conn io.ReadWriter, msg *Message) error {
+func writeFrame(conn io.Writer, msg *Message) error {
 
 	if uint32(len(msg.Payload)) > maxPayloadSize {
 		return &ErrPayloadTooLarge{}
 	}
 
 	if msg.Size != uint32(len(msg.Payload)) {
-		return errors.New("size does not match payload length")
+		return ErrSizeMismatch
 	}
 
 	if _, err := conn.Write(makeHeader(msg)); err != nil {
@@ -186,7 +203,7 @@ func writeFrame(conn io.ReadWriter, msg *Message) error {
 	return nil
 }
 
-func validateProtocol(conn io.ReadCloser, msg *Message) error {
+func validateProtocol(conn io.Reader, msg *Message) error {
 
 	buf := make([]byte, offReqID+reqIDSize)
 	_, err := io.ReadFull(conn, buf)
