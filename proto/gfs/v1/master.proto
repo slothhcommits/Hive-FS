@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package gfs.v1;
 
-option go_package = "github.com/PraveenC2002/gfs/internal/messages;messages";
+option go_package = "github.com/nerdySlothh/Hive-FS/internal/messages;messages";
 
 // master message type range is 101 - 150
 message Master {
@@ -17,11 +17,6 @@ message Master {
     MESSAGE_TYPE_LOCAL_COPY_CHUNK = 105;
     MESSAGE_TYPE_REPLICATE_CHUNK = 106;
     MESSAGE_TYPE_DELETE_CHUNK = 107;
-
-    // client message types
-    MESSAGE_TYPE_FILE = 126;
-    MESSAGE_TYPE_CHUNK_REPLICAS = 127;
-    MESSAGE_TYPE_SUBTREE = 128;
   }
 
   // chunkserver messages
@@ -73,6 +68,7 @@ message Master {
     string primary = 3;
     int64 lease_expiry = 4;
     repeated string locations = 5;
+    uint32 chunk_idx = 6;
   }
 
   message Subtree {
