@@ -2,10 +2,16 @@ package hive
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
+	"net"
+
+	"google.golang.org/protobuf/proto"
 )
 
 /*
@@ -70,48 +76,157 @@ type Message struct {
 	Payload []byte
 }
 
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+type ShortMessage struct {
+	Type    uint8
+	Message proto.Message
+}
+
 type Stream struct {
-	Metadata
-	Pipe io.Reader
-	io.Closer
+	Metadata      *Message
+	stopAfterFunc func() bool
+
+	conn         net.Conn
+	hashedReader io.Reader
+	rHash        hash.Hash32
+	hashedWriter io.Writer
+	wHash        hash.Hash32
+
+	Inbound chan *Message
 }
 
-type streamWriter struct {
-	w         io.WriteCloser
-	remaining int
-	header    []byte
+func newStream(conn net.Conn, meta *Message, stop func() bool) *Stream {
+
+	s := &Stream{
+		Metadata:      meta,
+		stopAfterFunc: stop,
+		rHash:         crc32.New(castagnoli),
+		wHash:         crc32.New(castagnoli),
+		Inbound:       make(chan *Message, 10),
+	}
+
+	s.conn = conn
+	s.hashedReader = io.TeeReader(conn, s.rHash)
+	s.hashedWriter = io.MultiWriter(conn, s.wHash)
+
+	return s
 }
 
-func (sw *streamWriter) Write(p []byte) (int, error) {
+func (s *Stream) Read(p []byte) (int, error) {
+	return s.hashedReader.Read(p)
+}
+
+func (s *Stream) ValidateRead() error {
+
+	var buf [4]byte
+	if _, err := io.ReadFull(s.conn, buf[:]); err != nil {
+		return err
+	}
+
+	checksum := binary.BigEndian.Uint32(buf[:])
+	sum := s.rHash.Sum32()
+	// the next message on this stream starts its own checksum
+	s.rHash.Reset()
+
+	if sum != checksum {
+		return errors.New("corrupted stream")
+	}
+
+	return nil
+}
+
+func (s *Stream) ReadStreamMessage() (*Message, error) {
+
+	var metaBuf [5]byte
+	_, err := io.ReadFull(s.conn, metaBuf[:])
+	if err != nil {
+		return nil, err
+	}
+
+	length := binary.BigEndian.Uint32(metaBuf[:4])
+
+	if length > maxPayloadSize {
+		return nil, fmt.Errorf("exceeded max payload size")
+	}
+	buf := make([]byte, length)
+
+	_, err = io.ReadFull(s.conn, buf)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Message{
+		Payload: buf,
+		Metadata: Metadata{
+			Type: metaBuf[4],
+			Size: uint32(len(buf)),
+		},
+	}, nil
+}
+
+func (s *Stream) ListenInbound(ctx context.Context) {
+
+	defer s.Close()
+	defer close(s.Inbound)
+
+	for {
+		msg, err := s.ReadStreamMessage()
+		if err != nil {
+			return
+		}
+		select {
+		case s.Inbound <- msg:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Stream) Write(p []byte) (int, error) {
 
 	if len(p) == 0 {
 		return 0, nil
 	}
 
-	if sw.remaining < len(p) {
-		return 0, errors.New("stream overrun")
+	n, err := s.hashedWriter.Write(p)
+	if err != nil {
+		return n, err
 	}
 
-	if sw.header != nil {
-		_, err := sw.w.Write(sw.header)
-		if err != nil {
-			return 0, err
-		}
-		sw.header = nil
-	}
-
-	n, err := sw.w.Write(p)
-	sw.remaining -= n
-
-	return n, err
+	return n, nil
 }
 
-func (sw *streamWriter) Close() error {
-	if sw.remaining != 0 {
-		sw.w.Close()
-		return errors.New("stream underrun")
+func (s *Stream) WriteStreamMessage(msg *ShortMessage) error {
+
+	buf := make([]byte, 5, 5+proto.Size(msg.Message))
+	buf[4] = msg.Type
+	buf, err := proto.MarshalOptions{}.MarshalAppend(buf, msg.Message)
+	if err != nil {
+		return err
 	}
-	return sw.w.Close()
+
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(buf)-5))
+	_, err = s.conn.Write(buf)
+
+	return err
+}
+
+func (s *Stream) WriteChecksum() error {
+	var t [4]byte
+	binary.BigEndian.PutUint32(t[:], s.wHash.Sum32())
+	s.wHash.Reset()
+	_, err := s.conn.Write(t[:])
+	return err
+}
+
+func (s *Stream) Close() error {
+
+	if s.stopAfterFunc != nil {
+		s.stopAfterFunc()
+	}
+
+	return s.conn.Close()
 }
 
 type ProtocolErr interface {
@@ -226,34 +341,12 @@ func validateProtocol(conn io.Reader, msg *Message) error {
 	return nil
 }
 
-func getStream(conn io.ReadCloser) (*Stream, error) {
+func readPayload(conn io.Reader, msg *Message) error {
 
 	off := offMsgFlags
 
 	buf := make([]byte, headerSize-off)
 	_, err := io.ReadFull(conn, buf)
-
-	if err != nil {
-		return nil, err
-	}
-
-	s := &Stream{}
-	s.Size = binary.BigEndian.Uint32(buf[offLength-off : offLength-off+lengthSize])
-	s.Flags = buf[offMsgFlags-off]
-	s.Type = buf[offType-off]
-	s.Pipe = io.LimitReader(conn, int64(s.Size))
-	s.Closer = conn
-
-	return s, nil
-}
-
-func readPayload(conn io.ReadCloser, msg *Message) error {
-
-	off := offMsgFlags
-
-	buf := make([]byte, headerSize-off)
-	_, err := io.ReadFull(conn, buf)
-
 	if err != nil {
 		return err
 	}
