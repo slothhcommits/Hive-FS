@@ -1,67 +1,137 @@
 package chunkserver
 
 import (
+	"cmp"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"syscall"
 	"time"
 
-	"github.com/PraveenC2002/gfs/internal"
-	"github.com/PraveenC2002/gfs/internal/hive"
-	"github.com/PraveenC2002/gfs/internal/messages"
+	"github.com/slothhcommits/Hive-FS/internal"
+	"github.com/slothhcommits/Hive-FS/internal/hive"
+	"github.com/slothhcommits/Hive-FS/internal/messages"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
 	concurrentWriteLimit = 64
-	pingTimeout          = 2 * time.Second
+
+	// timeouts
+	pingTimeout               = 2 * time.Second
+	leaseTimeout              = 60 * time.Second
+	replicationRequestTimeout = 10 * time.Second
+	sencondaryWriteTimeout    = 10 * time.Second
+	heartbeatTimeout          = 4 * time.Second
+
+	// intervals
+	heartbeatInterval   = 10 * time.Second
+	bufferTTL           = 60 * time.Second
+	bufferSweepInterval = 5 * time.Second
+	scrubInterval       = 30 * time.Second
+	scrubThrottle       = 5 * time.Second
 )
 
-type chunkServerOpts struct {
-	listenAddr string
+type ChunkServerOpts struct {
+	ListenAddr string
+	MasterAddr string
+	StorePath  string // defaults to ~/.hiveStore
 }
 
 type chunkserver struct {
-	*chunkServerOpts
+	*ChunkServerOpts
+
+	*store
 
 	transport hive.Transport
 
-	*bufferMap
-	*chunkLeaseSet
-	*chunkHandleSet
-
 	*persistentState
 
-	closeCh chan struct{}
+	*bufferMap
+	*leaseMap
+
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closeCh   chan struct{}
 }
 
-func NewChunkServer() *chunkserver {
+func NewChunkServer(opts *ChunkServerOpts) *chunkserver {
+
+	if opts.StorePath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+		opts.StorePath = filepath.Join(home, ".hiveStore")
+	}
+
 	return &chunkserver{
+
+		ChunkServerOpts: opts,
+
+		store: newStore(opts.StorePath),
+
 		transport: hive.NewTCPTransport(),
-		bufferMap: &bufferMap{},
+
+		bufferMap: &bufferMap{
+			entries: make(map[uint32]*bufferEntry),
+		},
+
+		leaseMap: &leaseMap{
+			entries: make(map[uint64]time.Time),
+		},
+
+		closeCh: make(chan struct{}),
 	}
 }
 
-func (cs *chunkserver) boot(ctx context.Context) error {
+func (cs *chunkserver) Boot(ctx context.Context) error {
 
+	// nothing may serve before the on disk state is known
+	cs.persistentState = cs.store.buildState()
+
+	cs.wg.Add(5)
 	go cs.handleRequests(ctx)
-
 	go cs.handleStreams(ctx)
+	go cs.heartbeatLoop()
+	go cs.bufferSweepLoop()
+	go cs.scrub()
 
 	go func() {
 		<-ctx.Done()
-		close(cs.closeCh)
-		cs.transport.Close()
+		cs.Close()
 	}()
 
-	return cs.listenAndAccept(ctx)
+	err := cs.listenAndAccept(ctx)
+
+	// ListenAndAccept returns once the transport is down, which is also how a
+	// listen failure surfaces, so tear down either way and let the loops drain
+	cs.Close()
+	cs.wg.Wait()
+
+	return err
+}
+
+func (cs *chunkserver) Close() error {
+
+	cs.closeOnce.Do(func() {
+		close(cs.closeCh)
+		cs.transport.Close()
+	})
+
+	return nil
 }
 
 func (cs *chunkserver) listenAndAccept(ctx context.Context) error {
 
-	err := cs.transport.ListenAndAccept(cs.listenAddr)
+	err := cs.transport.ListenAndAccept(cs.ListenAddr)
 	if err != nil {
 		return err
 	}
