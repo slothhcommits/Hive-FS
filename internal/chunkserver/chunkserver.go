@@ -1103,6 +1103,97 @@ func (cs *chunkserver) deleteChunkHandler(msg *hive.Message) {
 	cs.deletechunk(handle)
 }
 
+// client handlers
+
+func (cs *chunkserver) readHandler(stream *hive.Stream) {
+
+	defer stream.Close()
+	metadata := &messages.Client_ReadStreamMetadata{}
+
+	err := proto.Unmarshal(stream.Metadata.Payload, metadata)
+	if err != nil {
+		cs.sendStreamError(stream, messages.Error_CODE_UNMARSHAL_FAILED, err)
+		return
+	}
+
+	handle := metadata.ChunkId
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+	if !ok {
+		cs.sendStreamError(stream, messages.Error_CODE_UNAVAILABLE, internal.ErrUnavailable)
+		return
+	}
+
+	chunk.mu.RLock()
+	defer chunk.mu.RUnlock()
+
+	cs.versionMap.Lock()
+	if cs.versionMap.entries[chunk.handle] < metadata.Version {
+		cs.versionMap.Unlock()
+		cs.sendStreamError(stream, messages.Error_CODE_UNAVAILABLE, internal.ErrUnavailable)
+		return
+	}
+	cs.versionMap.Unlock()
+
+	f, err := cs.store.openFile(cs.makeChunkPath(handle))
+	if err != nil {
+		code := messages.Error_CODE_OP_FAILED
+		if errors.Is(err, fs.ErrNotExist) {
+			code = messages.Error_CODE_UNAVAILABLE
+		}
+		cs.sendStreamError(stream, code, err)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		cs.sendStreamError(stream, messages.Error_CODE_OP_FAILED, err)
+		return
+	}
+
+	if metadata.Offset < 0 || metadata.Offset > fi.Size() {
+		cs.sendStreamError(stream, messages.Error_CODE_BAD_REQUEST, internal.ErrBadRequest)
+		return
+	}
+
+	metadata.Length = min(metadata.Length, uint32(fi.Size()-metadata.Offset))
+
+	err = chunk.checksums.verify(f, metadata.Offset, metadata.Length)
+	if err != nil {
+		cs.sendStreamError(stream, messages.Error_CODE_OP_FAILED, err)
+		return
+	}
+
+	_, err = f.Seek(metadata.Offset, io.SeekStart)
+	if err != nil {
+		cs.sendStreamError(stream, messages.Error_CODE_OP_FAILED, err)
+		return
+	}
+
+	err = stream.WriteStreamMessage(&hive.ShortMessage{
+		Type: uint8(messages.Chunkserver_MESSAGE_TYPE_READ_STREAM),
+		Message: &messages.Chunkserver_ReadStream{
+			Length: metadata.Length,
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	_, err = io.CopyN(stream, f, int64(metadata.Length))
+	if err != nil {
+		return
+	}
+
+	err = stream.WriteChecksum()
+	if err != nil {
+		return
+	}
+}
+
 func (cs *chunkserver) serveChunkHandler(stream *hive.Stream) {
 
 	defer stream.Close()
