@@ -140,6 +140,8 @@ func (cs *chunkserver) listenAndAccept(ctx context.Context) error {
 
 func (cs *chunkserver) handleRequests(ctx context.Context) {
 
+	defer cs.wg.Done()
+
 	reqCh := cs.transport.Consume()
 
 	for {
@@ -158,6 +160,8 @@ func (cs *chunkserver) handleRequests(ctx context.Context) {
 
 func (cs *chunkserver) handleStreams(ctx context.Context) {
 
+	defer cs.wg.Done()
+
 	streamsCh := cs.transport.Streams()
 
 	for {
@@ -168,42 +172,123 @@ func (cs *chunkserver) handleStreams(ctx context.Context) {
 			if !ok {
 				return
 			}
-			cs.streamRouter(stream)
+			cs.wg.Add(1)
+			go func() {
+				defer cs.wg.Done()
+				// the transport hands the conn over and stops tracking it, and
+				// clears its read deadline, so on shutdown nothing else can
+				// unblock a router parked on a read. closing the stream here is
+				// the only thing that will.
+				done := make(chan struct{})
+				go func() {
+					select {
+					case <-done:
+					case <-cs.closeCh:
+						stream.Close()
+					}
+				}()
+				cs.streamRouter(stream)
+				close(done)
+			}()
 		}
 	}
 }
 
 func (cs *chunkserver) streamRouter(stream *hive.Stream) {
 
-	switch stream.Type {
-	case uint8(messages.Client_MESSAGE_TYPE_DATA_STREAM):
-		cs.clientStreamHandler(stream)
+	switch stream.Metadata.Type {
+
+	// client
+	case uint8(messages.Client_MESSAGE_TYPE_READ_STREAM):
+		cs.readHandler(stream)
+
+	case uint8(messages.Client_MESSAGE_TYPE_WRITE_DATA_STREAM):
+		cs.streamHandler(stream, true)
+
+	// chunkserver
 	case uint8(messages.Chunkserver_MESSAGE_TYPE_DATA_STREAM):
-		cs.peerStreamHandler(stream)
+		cs.streamHandler(stream, false)
+
+	case uint8(messages.Chunkserver_MESSAGE_TYPE_REPLICATE_CHUNK):
+		cs.serveChunkHandler(stream)
 	}
 
 }
 
 func (cs *chunkserver) requestRouter(req hive.Request) {
+
 	switch req.Message().Type {
 
+	// master
+
+	case uint8(messages.Master_MESSAGE_TYPE_TAKE_LEASE):
+		req.Respond(cs.leaseGrantHandler(req.Message()))
+
+	case uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION):
+		req.Respond(cs.updateVersionHandler(req.Message()))
+
+	case uint8(messages.Master_MESSAGE_TYPE_REVOKE_LEASE):
+		req.Respond(cs.revokeLease(req.Message()))
+
+	case uint8(messages.Master_MESSAGE_TYPE_LOCAL_COPY_CHUNK):
+		req.Respond(cs.localCopyHandler(req.Message()))
+
+	case uint8(messages.Master_MESSAGE_TYPE_REPLICATE_CHUNK):
+		req.Respond(cs.replicationHandler(req.Message()))
+
+	case uint8(messages.Master_MESSAGE_TYPE_DELETE_CHUNK):
+		cs.deleteChunkHandler(req.Message())
+
+	// client
+	case uint8(messages.Client_MESSAGE_TYPE_COMMIT_WRITE):
+		req.Respond(cs.primaryWriteHandler(req.Message()))
+
+	// chunkserver
 	case uint8(messages.Chunkserver_MESSAGE_TYPE_PING):
 		req.Respond(cs.pong(req.Message()))
+
+	case uint8(messages.Chunkserver_MESSAGE_TYPE_DROP_BUFFER):
+		cs.dropBufferHandler(req.Message())
+
+	case uint8(messages.Chunkserver_MESSAGE_TYPE_COMMIT_WRITE):
+		req.Respond(cs.secondaryWriteHandler(req.Message()))
+
 	}
 }
 
 func (cs *chunkserver) sendRequest(ctx context.Context, addr string, msg *hive.Message) (*hive.Message, error) {
 
-	peer, err := cs.transport.Dial(addr)
-	if err != nil {
-		return nil, err
+	var peer hive.Peer
+	var ch <-chan *hive.Message
+	var err error
+
+	// a failed write evicts the peer, so the one retry dials a fresh connection
+	for attempt := 0; attempt < 2; attempt++ {
+
+		peer, err = cs.transport.Dial(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		if ctx == nil {
+			err = peer.Send(nil, msg)
+			if err == nil {
+				return nil, nil
+			}
+			continue
+		}
+
+		// a request the caller already gave up on must not go out
+		if err = ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		ch, err = peer.Request(ctx, msg)
+		if err == nil {
+			break
+		}
 	}
 
-	if ctx == nil {
-		return nil, peer.Send(msg)
-	}
-
-	ch, err := peer.Request(msg)
 	if err != nil {
 		return nil, err
 	}
