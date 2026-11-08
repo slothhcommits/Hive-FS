@@ -796,6 +796,291 @@ func (cs *chunkserver) revokeLease(msg *hive.Message) *hive.Message {
 	}
 }
 
+func (cs *chunkserver) localCopyHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Master_LocalCopy{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	srcId := req.SrcId
+	dstId := req.DstId
+
+	// check src and dst, if dst does not exist create one
+	cs.chunkSet.Lock()
+
+	src, ok := cs.chunkSet.entries[srcId]
+	if !ok {
+		cs.chunkSet.Unlock()
+		return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, internal.ErrUnavailable)
+	}
+
+	if !src.mu.TryLock() {
+		cs.chunkSet.Unlock()
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_BUSY, internal.ErrBusy)
+	}
+	defer src.mu.Unlock()
+
+	_, ok = cs.chunkSet.entries[dstId]
+	if ok {
+		cs.chunkSet.Unlock()
+		return internal.MakeErrMessage(messages.Error_CODE_EXISTS, fmt.Errorf("chunk exists"))
+	}
+	cs.chunkSet.Unlock()
+
+	dst, err := cs.mintNewChunk(dstId)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	dst.mu.Lock()
+	defer dst.mu.Unlock()
+
+	// clean up on error
+	defer func() {
+		if err != nil {
+			cs.deletechunk(dstId)
+		}
+	}()
+
+	// open source file and get information
+	srcChunkFile, err := cs.store.openFile(cs.store.makeChunkPath(srcId))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer srcChunkFile.Close()
+
+	srcInfo, err := srcChunkFile.Stat()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	err = src.checksums.verify(srcChunkFile, 0, uint32(srcInfo.Size()))
+	if err != nil {
+		if errors.Is(err, internal.ErrFileCorrupt) {
+			cs.deletechunk(src.handle)
+		}
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	_, err = srcChunkFile.Seek(0, io.SeekStart)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	// open dst files
+	dstChecksumFile, err := cs.store.openFile(cs.store.makeChecksumPath(dstId))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer dstChecksumFile.Close()
+
+	dstChunkFile, err := cs.store.openFile(cs.store.makeChunkPath(dstId))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer dstChunkFile.Close()
+
+	// copy, update checksums, flush checksums, ack
+	_, err = io.CopyN(dstChunkFile, srcChunkFile, srcInfo.Size())
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	err = dstChunkFile.Sync()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	// inherit the source's checksums and verify the copy against them, so the
+	// checksum proves the copy matches the source instead of describing itself
+	dst.checksums.table = slices.Clone(src.table)
+
+	err = dst.checksums.verify(dstChunkFile, 0, uint32(srcInfo.Size()))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	err = dst.checksums.flush(dstChecksumFile)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	ack := &messages.Ack{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.MessageType_ACK),
+		},
+	}
+}
+
+func (cs *chunkserver) replicationHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Master_Replicate{}
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	handle := req.Handle
+	version := req.Version
+
+	chunk, err := cs.mintNewChunk(handle)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	chunk.mu.Lock()
+	defer chunk.mu.Unlock()
+
+	defer func() {
+		if err != nil {
+			cs.deletechunk(handle)
+		}
+	}()
+
+	metadata := &messages.Chunkserver_ChunkReplicationRequest{
+		Handle:  handle,
+		Version: version,
+	}
+
+	metaBuf, err := proto.Marshal(metadata)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), replicationRequestTimeout)
+	defer cancel()
+
+	stream, err := cs.transport.OpenStream(
+		ctx,
+		req.Src,
+		&hive.Message{
+			Payload: metaBuf,
+			Metadata: hive.Metadata{
+				Size: uint32(len(metaBuf)),
+				Type: uint8(messages.Chunkserver_MESSAGE_TYPE_REPLICATE_CHUNK),
+			},
+		},
+	)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer stream.Close()
+
+	peerMsg, err := stream.ReadStreamMessage()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	// the source answers with either the stream header or the reason it cannot serve
+	if peerMsg.Type != uint8(messages.Chunkserver_MESSAGE_TYPE_CHUNK_REPLICATION_STREAM) {
+
+		if peerMsg.Type != uint8(messages.MessageType_ACK) {
+			err = internal.ErrOpFailed
+			return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+		}
+
+		peerAck := &messages.Ack{}
+		err = proto.Unmarshal(peerMsg.Payload, peerAck)
+		if err != nil {
+			return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+		}
+
+		if peerAck.Err == nil {
+			err = internal.ErrBadRequest
+			return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+		}
+
+		err = fmt.Errorf("%s", peerAck.Err.Message)
+		return internal.MakeErrMessage(peerAck.Err.Code, err)
+	}
+
+	streamMeta := &messages.Chunkserver_ChunkReplicationStream{}
+	err = proto.Unmarshal(peerMsg.Payload, streamMeta)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	if streamMeta.Length > maxChunkSize {
+		err = fmt.Errorf("stream length greater than max supported chunk size %w", internal.ErrBadRequest)
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	chunkFile, err := cs.store.openFile(cs.store.makeChunkPath(handle))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer chunkFile.Close()
+
+	checksumFile, err := cs.store.openFile(cs.store.makeChecksumPath(handle))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+	defer checksumFile.Close()
+
+	_, err = io.CopyN(chunkFile, stream, int64(streamMeta.Length))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	// the trailing crc covers everything that just came off the wire
+	err = stream.ValidateRead()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_STREAM_FAILED, err)
+	}
+
+	err = chunkFile.Sync()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	err = chunk.update(chunkFile, 0, streamMeta.Length)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	err = chunk.checksums.flush(checksumFile)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	// update version
+	chunk.mu.Unlock()
+	err = cs.updateChunkVersion(handle, version)
+	chunk.mu.Lock()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	ack := &messages.Ack{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.MessageType_ACK),
+		},
+	}
+}
+
 func (cs *chunkserver) deleteChunkHandler(msg *hive.Message) {
 
 	req := &messages.Master_DeleteChunk{}
@@ -818,6 +1103,90 @@ func (cs *chunkserver) deleteChunkHandler(msg *hive.Message) {
 	cs.deletechunk(handle)
 }
 
+func (cs *chunkserver) serveChunkHandler(stream *hive.Stream) {
+
+	defer stream.Close()
+
+	metadata := &messages.Chunkserver_ChunkReplicationRequest{}
+
+	err := proto.Unmarshal(stream.Metadata.Payload, metadata)
+	if err != nil {
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err))
+		return
+	}
+
+	handle := metadata.Handle
+	version := metadata.Version
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+	if !ok {
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_UNAVAILABLE, internal.ErrUnavailable))
+		return
+	}
+
+	if !chunk.mu.TryLock() {
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_CHUNKSERVER_BUSY, internal.ErrBusy))
+		return
+	}
+	defer chunk.mu.Unlock()
+
+	cs.versionMap.Lock()
+	if v, ok := cs.versionMap.entries[handle]; !ok || v != version {
+		cs.versionMap.Unlock()
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_OP_FAILED, internal.ErrBadRequest))
+		return
+	}
+	cs.versionMap.Unlock()
+
+	// open files
+	chunkFile, err := cs.store.openFile(cs.store.makeChunkPath(handle))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			cs.deletechunk(handle)
+		}
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_OP_FAILED, err))
+		return
+	}
+	defer chunkFile.Close()
+
+	chunkInfo, err := chunkFile.Stat()
+	if err != nil {
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_OP_FAILED, err))
+		return
+	}
+
+	// verify chunk
+	err = chunk.checksums.verify(chunkFile, 0, uint32(chunkInfo.Size()))
+	if err != nil {
+		// maybe delete chunk
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_OP_FAILED, err))
+		return
+	}
+
+	_, err = chunkFile.Seek(0, io.SeekStart)
+	if err != nil {
+		stream.WriteStreamMessage(internal.MakeShortErrMessage(messages.Error_CODE_OP_FAILED, err))
+		return
+	}
+
+	err = stream.WriteStreamMessage(&hive.ShortMessage{
+		Type: uint8(messages.Chunkserver_MESSAGE_TYPE_CHUNK_REPLICATION_STREAM),
+		Message: &messages.Chunkserver_ChunkReplicationStream{
+			Length: uint32(chunkInfo.Size()),
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	_, err = io.CopyN(stream, chunkFile, chunkInfo.Size())
+	if err != nil {
+		return
+	}
+	stream.WriteChecksum()
+}
 func (cs *chunkserver) ping(ctx context.Context, addr string) error {
 
 	req := &messages.Ack{
