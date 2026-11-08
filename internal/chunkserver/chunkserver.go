@@ -442,6 +442,69 @@ func (cs *chunkserver) downdateChunkVersion(handle uint64, version uint32) error
 	return nil
 }
 
+func (cs *chunkserver) scrub() {
+
+	defer cs.wg.Done()
+
+	for {
+
+		cs.chunkSet.Lock()
+		snap := maps.Clone(cs.chunkSet.entries)
+		cs.chunkSet.Unlock()
+
+		for _, chunk := range snap {
+
+			if !chunk.mu.TryLock() {
+				continue
+			}
+
+			if err := cs.verifyChunk(chunk); err != nil {
+				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, internal.ErrFileCorrupt) {
+					cs.deletechunk(chunk.handle)
+				}
+			}
+
+			chunk.mu.Unlock()
+
+			select {
+			case <-time.After(scrubThrottle):
+			case <-cs.closeCh:
+				return
+			}
+		}
+
+		select {
+		case <-time.After(scrubInterval):
+		case <-cs.closeCh:
+			return
+		}
+	}
+}
+
+func (cs *chunkserver) bufferSweepLoop() {
+
+	defer cs.wg.Done()
+
+	ticker := time.NewTicker(bufferSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+		case <-cs.closeCh:
+			return
+		}
+
+		cs.bufferMap.Lock()
+		for id, entry := range cs.bufferMap.entries {
+			if !entry.pushedAt.IsZero() && time.Since(entry.pushedAt) > bufferTTL {
+				delete(cs.bufferMap.entries, id)
+			}
+		}
+		cs.bufferMap.Unlock()
+	}
+}
+
 func (cs *chunkserver) ping(ctx context.Context, addr string) error {
 
 	req := &messages.Ack{
