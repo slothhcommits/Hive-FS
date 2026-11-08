@@ -1606,6 +1606,244 @@ func (cs *chunkserver) sendStreamError(stream *hive.Stream, code messages.Error_
 	return stream.WriteStreamMessage(internal.MakeShortErrMessage(code, err))
 }
 
+// single commit
+func (cs *chunkserver) primaryWriteHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Client_Write{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[req.ChunkId]
+	cs.chunkSet.Unlock()
+	if !ok {
+		return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, fmt.Errorf("chunk unavailable"))
+	}
+
+	chunk.mu.Lock()
+	defer chunk.mu.Unlock()
+
+	// the version is the lease epoch; every secondary write carries it so a
+	// delayed commit from a previous lease is rejected on arrival.
+	cs.versionMap.Lock()
+	version, versionOk := cs.versionMap.entries[req.ChunkId]
+	cs.versionMap.Unlock()
+	if !versionOk {
+		return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, fmt.Errorf("chunk unavailable"))
+	}
+
+	cs.leaseMap.Lock()
+	if t, ok := cs.leaseMap.entries[req.ChunkId]; !ok || time.Since(t) > leaseTimeout {
+		if ok {
+			delete(cs.leaseMap.entries, req.ChunkId)
+		}
+		cs.leaseMap.Unlock()
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_LEASE_UNAVAILABLE, fmt.Errorf("lease unavailable"))
+	}
+	cs.leaseMap.Unlock()
+
+	// a client is mutating here, so the lease is worth renewing whether or not
+	// this particular commit goes on to succeed
+	chunk.lastWrite.Store(time.Now().UnixNano())
+
+	cs.bufferMap.Lock()
+	entry, ok := cs.bufferMap.entries[req.BufferId]
+	cs.bufferMap.Unlock()
+	if !ok || entry.chunkHandle != chunk.handle {
+		return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, fmt.Errorf("buffer unavailable"))
+	}
+
+	buf := entry.buf
+	defer func() {
+		cs.bufferMap.Lock()
+		delete(cs.bufferMap.entries, req.BufferId)
+		cs.bufferMap.Unlock()
+	}()
+
+	if req.Offset < -1 || req.Offset >= 0 && req.Offset+int64(len(buf)) > maxChunkSize {
+		return internal.MakeErrMessage(messages.Error_CODE_BAD_REQUEST, internal.ErrBadRequest)
+	}
+
+	chunkFile, err := cs.store.openFile(cs.store.makeChunkPath(chunk.handle))
+	if err != nil {
+		code := messages.Error_CODE_OP_FAILED
+		if errors.Is(err, fs.ErrNotExist) {
+			cs.deletechunk(chunk.handle)
+			code = messages.Error_CODE_UNAVAILABLE
+		}
+		return internal.MakeErrMessage(code, fmt.Errorf("chunk unavailable"))
+	}
+	defer chunkFile.Close()
+
+	chunkFileInfo, err := chunkFile.Stat()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	padLength := uint32(0)
+	if req.Offset == -1 {
+
+		if chunkFileInfo.Size() >= maxChunkSize {
+			return internal.MakeErrMessage(messages.Error_CODE_OVERFLOW, fmt.Errorf("chunk full"))
+		}
+
+		req.Offset = chunkFileInfo.Size()
+
+		if chunkFileInfo.Size()+int64(len(buf)) > maxChunkSize {
+			// pad and error
+			padLength = uint32(maxChunkSize - chunkFileInfo.Size())
+			buf = make([]byte, padLength)
+		}
+	}
+
+	chunkChecksumFile, err := cs.store.openFile(cs.store.makeChecksumPath(chunk.handle))
+	if err != nil {
+		code := messages.Error_CODE_OP_FAILED
+		if errors.Is(err, fs.ErrNotExist) {
+			cs.deletechunk(chunk.handle)
+			code = messages.Error_CODE_UNAVAILABLE
+		}
+		return internal.MakeErrMessage(code, fmt.Errorf("checksums unavailable"))
+	}
+	defer chunkChecksumFile.Close()
+
+	// verify the bytes
+	size := chunkFileInfo.Size()
+	if req.Offset < size {
+		length := min(int64(len(buf)), size-req.Offset)
+		err = chunk.checksums.verify(chunkFile, req.Offset, uint32(length))
+		if err != nil {
+			if errors.Is(err, internal.ErrFileCorrupt) {
+				cs.deletechunk(chunk.handle)
+			}
+			return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, fmt.Errorf("%w %w", err, internal.ErrOpFailed))
+		}
+	}
+
+	// the primary applies last, so on any failure it applies nothing and
+	// its ctr stays where it was, which is already the lowest in the set.
+	// the retry goes out with the same Sr; replicas that applied it see
+	// Sr <= ctr and reapply as a retry. no rewind is needed.
+	if errs := cs.fanoutSecondaryWrites(req, chunk.ctr, version, padLength); len(errs) != 0 {
+
+		errStr := ""
+		for _, peerErr := range errs {
+			if len(errStr) == 0 {
+				errStr = peerErr.Message
+			} else {
+				errStr = errStr + ":" + peerErr.Message
+			}
+		}
+
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_INCONSISTENT, fmt.Errorf("%s:%w", errStr, internal.ErrOpFailed))
+
+	}
+
+	err = cs.store.writeChunk(chunkFile, req.Offset, buf)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_INCONSISTENT, err)
+	}
+
+	err = chunk.update(chunkFile, req.Offset, uint32(len(buf)))
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_INCONSISTENT, err)
+	}
+
+	err = chunk.checksums.flush(chunkChecksumFile)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_INCONSISTENT, err)
+	}
+
+	chunk.ctr++
+
+	if padLength != 0 {
+		return internal.MakeErrMessage(messages.Error_CODE_OVERFLOW, fmt.Errorf("chunk padded"))
+	}
+
+	return internal.MakeAckMessage(&messages.Client_WriteAck{
+		Offset: req.Offset,
+	})
+}
+
+func (cs *chunkserver) fanoutSecondaryWrites(req *messages.Client_Write, ctr uint64, version uint32, padlength uint32) []*messages.Chunkserver_WriteError {
+
+	errCh := make(chan *messages.Chunkserver_WriteError, len(req.Secondaries))
+
+	// lease extensions
+	wg := sync.WaitGroup{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sencondaryWriteTimeout)
+	defer cancel()
+
+	for _, loc := range req.Secondaries {
+
+		wg.Add(1)
+		go func(loc string) {
+
+			defer wg.Done()
+
+			writeReq := &messages.Chunkserver_Write{
+				BufferId:  req.BufferId,
+				ChunkId:   req.ChunkId,
+				Offset:    req.Offset,
+				Sr:        ctr + 1,
+				PadLength: padlength,
+				Version:   version,
+			}
+
+			payload, err := proto.Marshal(writeReq)
+			if err != nil {
+				panic(err)
+			}
+
+			peerMsg := &hive.Message{
+				Payload: payload,
+				Metadata: hive.Metadata{
+					Size: uint32(len(payload)),
+					Type: uint8(messages.Chunkserver_MESSAGE_TYPE_COMMIT_WRITE),
+				},
+			}
+
+			// ctx
+			res, err := cs.sendRequest(ctx, loc, peerMsg)
+			if err != nil {
+				errCh <- &messages.Chunkserver_WriteError{
+					Message: err.Error(),
+				}
+				return
+			}
+
+			ack := &messages.Chunkserver_WriteAck{}
+
+			err = proto.Unmarshal(res.Payload, ack)
+			if err != nil {
+				errCh <- &messages.Chunkserver_WriteError{
+					Message: err.Error(),
+				}
+				return
+			}
+
+			if ack.Err != nil {
+				errCh <- ack.Err
+				return
+			}
+
+		}(loc)
+	}
+
+	wg.Wait()
+	close(errCh)
+	errs := []*messages.Chunkserver_WriteError{}
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+
+	return errs
+}
+
 // chunkserver handlers
 
 func (cs *chunkserver) pong(req *hive.Message) *hive.Message {
@@ -1653,6 +1891,173 @@ func (cs *chunkserver) dropBufferHandler(msg *hive.Message) {
 		delete(cs.bufferMap.entries, req.BufferId)
 	}
 	cs.bufferMap.Unlock()
+}
+
+func (cs *chunkserver) secondaryWriteHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Chunkserver_Write{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[req.ChunkId]
+	if !ok {
+		cs.chunkSet.Unlock()
+		return makeSecondaryWriteError(fmt.Errorf("chunk unavailable : %w", internal.ErrUnavailable))
+	}
+	cs.chunkSet.Unlock()
+
+	chunk.mu.Lock()
+	defer chunk.mu.Unlock()
+
+	cs.leaseMap.Lock()
+	if t, ok := cs.leaseMap.entries[req.ChunkId]; ok {
+		delete(cs.leaseMap.entries, req.ChunkId)
+		if time.Since(t) < leaseTimeout {
+			cs.leaseMap.Unlock()
+			return makeSecondaryWriteError(fmt.Errorf("lease conflict"))
+		}
+	}
+	cs.leaseMap.Unlock()
+
+	// the version is the lease epoch. a write from a previous lease, however
+	// delayed, is rejected here before the buffer or the counter is touched.
+	cs.versionMap.Lock()
+	version, versionOk := cs.versionMap.entries[req.ChunkId]
+	cs.versionMap.Unlock()
+	if !versionOk || version != req.Version {
+		return makeSecondaryWriteError(fmt.Errorf("%w : version mismatch", internal.ErrOpFailed))
+	}
+
+	cs.bufferMap.Lock()
+	entry, ok := cs.bufferMap.entries[req.BufferId]
+	cs.bufferMap.Unlock()
+	if !ok || entry.chunkHandle != chunk.handle {
+		return makeSecondaryWriteError(internal.ErrUnavailable)
+	}
+	defer func() {
+		cs.bufferMap.Lock()
+		delete(cs.bufferMap.entries, req.BufferId)
+		cs.bufferMap.Unlock()
+	}()
+
+	// a fresh ctr means either the version was just bumped, in which case the
+	// primary is also starting from 1, or this replica restarted part way
+	// through a lease. the version check above already ruled out a stale
+	// lease, and within a lease the secondary set is fixed and no commit
+	// succeeds without every member, so a zeroed replica with a matching
+	// version has missed nothing that was acked. seed from the primary.
+	if chunk.ctr == 0 {
+		chunk.ctr = req.Sr - 1
+	}
+
+	// the primary applies last and never rewinds, so no secondary can be
+	// behind it within a lease. with the seed above this branch has no
+	// reachable case in single commit; kept as a guard.
+	if req.Sr > chunk.ctr+1 {
+		return makeSecondaryWriteError(fmt.Errorf("%w : missed mutations", internal.ErrOpFailed))
+	}
+
+	chunkFile, err := cs.store.openFile(cs.store.makeChunkPath(chunk.handle))
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+	defer chunkFile.Close()
+
+	chunkFileInfo, err := chunkFile.Stat()
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, internal.ErrOpFailed)
+	}
+
+	chunkChecksumFile, err := cs.store.openFile(cs.store.makeChecksumPath(chunk.handle))
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+	defer chunkChecksumFile.Close()
+
+	buf := entry.buf
+
+	// verify the bytes
+	size := chunkFileInfo.Size()
+	if req.Offset < size {
+		length := min(int64(len(buf)), size-req.Offset)
+		err = chunk.checksums.verify(chunkFile, req.Offset, uint32(length))
+		if err != nil {
+			if errors.Is(err, internal.ErrFileCorrupt) {
+				cs.deletechunk(chunk.handle)
+			}
+			return makeSecondaryWriteError(fmt.Errorf("%w : corrupted data", internal.ErrOpFailed))
+		}
+	}
+
+	if req.PadLength != 0 {
+		buf = make([]byte, req.PadLength)
+	}
+
+	if req.Offset < 0 || req.Offset+int64(len(buf)) > maxChunkSize {
+		return makeSecondaryWriteError(fmt.Errorf("%w : invalid offset", internal.ErrOpFailed))
+	}
+
+	err = cs.store.writeChunk(chunkFile, req.Offset, buf)
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+
+	err = chunk.update(chunkFile, req.Offset, uint32(len(buf)))
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+
+	err = chunk.checksums.flush(chunkChecksumFile)
+	if err != nil {
+		return makeSecondaryWriteError(err)
+	}
+
+	if req.Sr > chunk.ctr {
+		chunk.ctr++
+	}
+
+	ack := &messages.Chunkserver_WriteAck{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.Chunkserver_MESSAGE_TYPE_WRITE_ACK),
+		},
+	}
+}
+
+func makeSecondaryWriteError(err error) *hive.Message {
+
+	ack := &messages.Chunkserver_WriteAck{
+		Err: &messages.Chunkserver_WriteError{
+			Message: err.Error(),
+		},
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.Chunkserver_MESSAGE_TYPE_WRITE_ACK),
+		},
+	}
 }
 
 func (cs *chunkserver) serveChunkHandler(stream *hive.Stream) {
