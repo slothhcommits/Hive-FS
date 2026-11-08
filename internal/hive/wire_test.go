@@ -2,117 +2,78 @@ package hive
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"io"
+	"net"
 	"testing"
+
+	"github.com/slothhcommits/Hive-FS/internal/messages"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
-// readFrame mirrors what the transport read loops do: validate the fixed
-// prefix, then pull the rest of the header plus the payload.
-func readFrame(r io.Reader) (*Message, error) {
+func VersionOneMessageToBytes(msg *Message) []byte {
 
-	rc := io.NopCloser(r)
-	msg := &Message{}
-
-	if err := validateProtocol(rc, msg); err != nil {
-		return nil, err
+	if msg == nil {
+		return []byte{}
 	}
 
-	if err := readPayload(rc, msg); err != nil {
-		return nil, err
-	}
+	buf := bytes.Buffer{}
 
-	return msg, nil
+	buf.WriteString("HVFS")                         // magic Byte
+	buf.WriteByte(1)                                // protocol version
+	buf.WriteByte(msg.frameFlags)                   // frameFlags
+	binary.Write(&buf, binary.BigEndian, msg.reqID) // request ID
+	buf.WriteByte(msg.Metadata.Flags)               // message Flags
+	buf.WriteByte(msg.Type)                         // Type
+	binary.Write(&buf, binary.BigEndian, msg.Size)  // length
+	buf.Write(msg.Payload)                          // payload
+
+	return buf.Bytes()
+}
+
+func randomPayload(n uint32) []byte {
+	buf := make([]byte, n)
+	_, err := rand.Read(buf)
+	if err != nil {
+		panic(err)
+	}
+	return buf
 }
 
 func TestMakeHeader(t *testing.T) {
 
-	t.Run("golden layout", func(t *testing.T) {
-
-		got := makeHeader(&Message{
-			reqID:      42,
-			frameFlags: flagZero,
-			Metadata: Metadata{
-				Type:  7,
-				Flags: 3,
-				Size:  4,
-			},
-		})
-
-		want := []byte{
-			'H', 'V', 'F', 'S', // magic
-			1,           // version
-			0,           // frame flags
-			0, 0, 0, 42, // request id, big endian
-			3,          // msg flags
-			7,          // type
-			0, 0, 0, 4, // length, big endian
-		}
-
-		if !bytes.Equal(got, want) {
-			t.Fatalf("header layout changed\n got: % x\nwant: % x", got, want)
-		}
-	})
-
-	t.Run("size", func(t *testing.T) {
-		if got := len(makeHeader(&Message{})); got != int(headerSize) {
-			t.Fatalf("header is %d bytes, want %d", got, headerSize)
-		}
-	})
-
-	t.Run("stream flag", func(t *testing.T) {
-		got := makeHeader(&Message{frameFlags: flagStream})
-		if got[offFrameFlags] != flagStream {
-			t.Fatalf("frame flags = %d, want %d", got[offFrameFlags], flagStream)
-		}
-	})
-}
-
-func TestFrameRoundTrip(t *testing.T) {
-
 	cases := []struct {
-		name string
-		msg  *Message
+		name  string
+		input *Message
 	}{
 		{
-			name: "typical",
-			msg: &Message{
-				reqID:    99,
-				Metadata: Metadata{Type: 12, Flags: 1, Size: 5},
-				Payload:  []byte("hello"),
+			name: "ordinary",
+			input: &Message{
+				reqID:      16777217,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type:  211,
+					Flags: flagZero,
+					Size:  1024 * 1024,
+				},
 			},
 		},
 		{
-			name: "empty payload",
-			msg: &Message{
-				reqID:    7,
-				Metadata: Metadata{Type: 3, Size: 0},
-				Payload:  []byte{},
-			},
-		},
-		{
-			name: "no reply request id",
-			msg: &Message{
-				reqID:    noReplyReqID,
-				Metadata: Metadata{Type: 1, Size: 2},
-				Payload:  []byte{0xff, 0x00},
-			},
-		},
-		{
-			name: "max payload",
-			msg: &Message{
-				reqID:    1,
-				Metadata: Metadata{Type: 2, Size: maxPayloadSize},
-				Payload:  bytes.Repeat([]byte{0xab}, int(maxPayloadSize)),
-			},
-		},
-		{
-			name: "binary payload with magic inside",
-			msg: &Message{
-				reqID:    1234,
-				Metadata: Metadata{Type: 9, Size: 8},
-				Payload:  []byte("HVFSHVFS"),
+			name: "stream",
+			input: &Message{
+				reqID:      0,
+				frameFlags: flagStream,
+				Metadata: Metadata{
+					Type:  211,
+					Flags: flagZero,
+					Size:  1024 * 1024 * 250,
+				},
 			},
 		},
 	}
@@ -120,298 +81,536 @@ func TestFrameRoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 
-			var buf bytes.Buffer
-
-			if err := writeFrame(&buf, tc.msg); err != nil {
-				t.Fatalf("writeFrame: %v", err)
-			}
-
-			if got, want := buf.Len(), int(headerSize)+len(tc.msg.Payload); got != want {
-				t.Fatalf("wrote %d bytes, want %d", got, want)
-			}
-
-			got, err := readFrame(&buf)
-			if err != nil {
-				t.Fatalf("readFrame: %v", err)
-			}
-
-			if got.reqID != tc.msg.reqID {
-				t.Errorf("reqID = %d, want %d", got.reqID, tc.msg.reqID)
-			}
-			if got.frameFlags != tc.msg.frameFlags {
-				t.Errorf("frameFlags = %d, want %d", got.frameFlags, tc.msg.frameFlags)
-			}
-			if got.Type != tc.msg.Type {
-				t.Errorf("Type = %d, want %d", got.Type, tc.msg.Type)
-			}
-			if got.Flags != tc.msg.Flags {
-				t.Errorf("Flags = %d, want %d", got.Flags, tc.msg.Flags)
-			}
-			if got.Size != tc.msg.Size {
-				t.Errorf("Size = %d, want %d", got.Size, tc.msg.Size)
-			}
-			if !bytes.Equal(got.Payload, tc.msg.Payload) {
-				t.Errorf("payload mismatch: got %d bytes, want %d", len(got.Payload), len(tc.msg.Payload))
-			}
-
-			if buf.Len() != 0 {
-				t.Errorf("%d bytes left unread, frame boundary is wrong", buf.Len())
+			res := makeHeader(tc.input)
+			expected := VersionOneMessageToBytes(tc.input)
+			if !bytes.Equal(res, expected) {
+				t.Errorf("got = %v \n want = %v \n", res, expected)
+				return
 			}
 		})
 	}
-
-	t.Run("back to back frames", func(t *testing.T) {
-
-		var buf bytes.Buffer
-
-		first := &Message{reqID: 1, Metadata: Metadata{Type: 1, Size: 3}, Payload: []byte("one")}
-		second := &Message{reqID: 2, Metadata: Metadata{Type: 2, Size: 3}, Payload: []byte("two")}
-
-		if err := writeFrame(&buf, first); err != nil {
-			t.Fatalf("writeFrame first: %v", err)
-		}
-		if err := writeFrame(&buf, second); err != nil {
-			t.Fatalf("writeFrame second: %v", err)
-		}
-
-		for i, want := range []*Message{first, second} {
-			got, err := readFrame(&buf)
-			if err != nil {
-				t.Fatalf("frame %d: %v", i, err)
-			}
-			if got.reqID != want.reqID || !bytes.Equal(got.Payload, want.Payload) {
-				t.Fatalf("frame %d = {%d, %q}, want {%d, %q}",
-					i, got.reqID, got.Payload, want.reqID, want.Payload)
-			}
-		}
-	})
 }
 
 func TestWriteFrame(t *testing.T) {
 
-	t.Run("size disagrees with payload", func(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   *Message
+		wantErr error
+	}{
+		{
+			name: "ordinary",
+			input: &Message{
+				reqID:      16777217,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type:  211,
+					Flags: flagZero,
+					Size:  maxPayloadSize,
+				},
+				Payload: randomPayload(maxPayloadSize),
+			},
+			wantErr: nil,
+		},
+		{
+			name: "exceed max payload size",
+			input: &Message{
+				reqID:      16777217,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type:  211,
+					Flags: flagZero,
+					Size:  maxPayloadSize + 1,
+				},
+				Payload: randomPayload(maxPayloadSize + 1),
+			},
+			wantErr: &ErrPayloadTooLarge{},
+		},
+		{
+			name: "mismatch payload length and size",
+			input: &Message{
+				reqID:      16777217,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type:  211,
+					Flags: flagZero,
+					Size:  1024,
+				},
+				Payload: randomPayload(1025),
+			},
+			wantErr: ErrSizeMismatch,
+		},
+	}
 
-		var buf bytes.Buffer
+	for _, tc := range cases {
 
-		err := writeFrame(&buf, &Message{
-			Metadata: Metadata{Size: 10},
-			Payload:  []byte("short"),
+		t.Run(tc.name, func(t *testing.T) {
+
+			pipe := &bytes.Buffer{}
+			err := writeFrame(pipe, tc.input)
+			assert.ErrorIs(t, err, tc.wantErr)
+			if tc.wantErr != nil {
+				return
+			}
+
+			expected := VersionOneMessageToBytes(tc.input)
+
+			result := make([]byte, len(expected))
+
+			_, err = io.ReadFull(pipe, result)
+			assert.ErrorIs(t, err, tc.wantErr)
+			if tc.wantErr != nil {
+				return
+			}
+
+			assert.Equal(t, expected, result)
 		})
+	}
 
-		if err == nil {
-			t.Fatal("expected an error when Size does not match len(Payload)")
-		}
-		if buf.Len() != 0 {
-			t.Errorf("wrote %d bytes despite the mismatch", buf.Len())
-		}
-	})
-
-	t.Run("payload over max", func(t *testing.T) {
-
-		var buf bytes.Buffer
-
-		payload := bytes.Repeat([]byte{1}, int(maxPayloadSize)+1)
-		err := writeFrame(&buf, &Message{
-			Metadata: Metadata{Size: uint32(len(payload))},
-			Payload:  payload,
-		})
-
-		var target *ErrPayloadTooLarge
-		if !errors.As(err, &target) {
-			t.Fatalf("err = %v, want *ErrPayloadTooLarge", err)
-		}
-		if buf.Len() != 0 {
-			t.Errorf("wrote %d bytes despite the oversize payload", buf.Len())
-		}
-	})
 }
 
 func TestValidateProtocol(t *testing.T) {
 
-	// a well formed header we can corrupt one field at a time
-	valid := func() []byte {
-		return makeHeader(&Message{
-			reqID:      0xDEADBEEF,
-			frameFlags: flagStream,
-			Metadata:   Metadata{Type: 5, Flags: 2, Size: 0},
+	cases := []struct {
+		name    string
+		input   []byte
+		want    *Message
+		wantErr error
+	}{
+		{
+			name: "ordinary",
+			want: &Message{
+				reqID:      1024,
+				frameFlags: flagZero,
+			},
+			input: VersionOneMessageToBytes(&Message{
+				reqID:      1024,
+				frameFlags: flagZero,
+			}),
+			wantErr: nil,
+		},
+		{
+			name: "bad magic byte",
+			want: &Message{
+				reqID:      1024,
+				frameFlags: flagZero,
+			},
+			input: func() []byte {
+				buf := VersionOneMessageToBytes(&Message{
+					reqID:      1024,
+					frameFlags: flagZero,
+				})
+				buf[0] = byte('B')
+				buf[1] = byte('A')
+				buf[2] = byte('D')
+				buf[3] = byte('M')
+
+				return buf
+			}(),
+			wantErr: &ErrInvalidProtocol{},
+		},
+		{
+			name: "unsupported protocol",
+			want: &Message{
+				reqID:      1024,
+				frameFlags: flagZero,
+			},
+			input: func() []byte {
+				buf := VersionOneMessageToBytes(&Message{
+					reqID:      1024,
+					frameFlags: flagZero,
+				})
+				buf[4] = 5
+				return buf
+			}(),
+
+			wantErr: &ErrUnsupportedVersion{},
+		},
+		{
+			name: "short header",
+			want: &Message{
+				reqID:      1024,
+				frameFlags: flagZero,
+			},
+			input: func() []byte {
+				buf := VersionOneMessageToBytes(&Message{
+					reqID:      1024,
+					frameFlags: flagZero,
+				})
+
+				buf = buf[:5]
+
+				return buf
+			}(),
+			wantErr: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tc := range cases {
+
+		t.Run(tc.name, func(t *testing.T) {
+
+			pipe := &bytes.Buffer{}
+
+			_, err := pipe.Write(tc.input)
+			require.NoError(t, err)
+
+			got := &Message{}
+
+			validationErr := validateProtocol(pipe, got)
+
+			assert.ErrorIs(t, validationErr, tc.wantErr)
+			if tc.wantErr != nil {
+				return
+			}
+
+			assert.Equal(t, tc.want, got)
 		})
 	}
 
-	t.Run("accepts a valid header", func(t *testing.T) {
-
-		msg := &Message{}
-		err := validateProtocol(io.NopCloser(bytes.NewReader(valid())), msg)
-		if err != nil {
-			t.Fatalf("validateProtocol: %v", err)
-		}
-
-		if msg.reqID != 0xDEADBEEF {
-			t.Errorf("reqID = %#x, want %#x", msg.reqID, 0xDEADBEEF)
-		}
-		if msg.frameFlags != flagStream {
-			t.Errorf("frameFlags = %d, want %d", msg.frameFlags, flagStream)
-		}
-	})
-
-	t.Run("consumes only the fixed prefix", func(t *testing.T) {
-
-		buf := bytes.NewReader(valid())
-		if err := validateProtocol(io.NopCloser(buf), &Message{}); err != nil {
-			t.Fatalf("validateProtocol: %v", err)
-		}
-
-		want := int(headerSize) - int(offReqID+reqIDSize)
-		if buf.Len() != want {
-			t.Fatalf("%d bytes left, want %d", buf.Len(), want)
-		}
-	})
-
-	t.Run("bad magic", func(t *testing.T) {
-
-		h := valid()
-		h[0] = 'X'
-
-		err := validateProtocol(io.NopCloser(bytes.NewReader(h)), &Message{})
-
-		var target *ErrInvalidProtocol
-		if !errors.As(err, &target) {
-			t.Fatalf("err = %v, want *ErrInvalidProtocol", err)
-		}
-	})
-
-	t.Run("unsupported version", func(t *testing.T) {
-
-		h := valid()
-		h[offVersion] = protocolVersion + 1
-
-		err := validateProtocol(io.NopCloser(bytes.NewReader(h)), &Message{})
-
-		var target *ErrUnsupportedVersion
-		if !errors.As(err, &target) {
-			t.Fatalf("err = %v, want *ErrUnsupportedVersion", err)
-		}
-	})
-
-	t.Run("closed connection", func(t *testing.T) {
-
-		err := validateProtocol(io.NopCloser(bytes.NewReader(nil)), &Message{})
-
-		if !errors.Is(err, io.EOF) {
-			t.Fatalf("err = %v, want io.EOF", err)
-		}
-	})
-
-	t.Run("truncated prefix", func(t *testing.T) {
-
-		err := validateProtocol(io.NopCloser(bytes.NewReader(valid()[:5])), &Message{})
-
-		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
-		}
-	})
 }
 
 func TestReadPayload(t *testing.T) {
 
-	// tail returns the bytes readPayload expects, i.e. the header from
-	// offMsgFlags onward followed by the payload.
-	tail := func(msgFlags, msgType uint8, length uint32, payload []byte) []byte {
-		buf := make([]byte, headerSize-offMsgFlags)
-		buf[offMsgFlags-offMsgFlags] = msgFlags
-		buf[offType-offMsgFlags] = msgType
-		binary.BigEndian.PutUint32(buf[offLength-offMsgFlags:], length)
-		return append(buf, payload...)
+	cases := []struct {
+		name    string
+		want    *Message
+		wantErr error
+	}{
+		{
+			name: "ordinary",
+			want: &Message{
+				reqID:      99999,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type: 225,
+					Size: 1024,
+				},
+				Payload: randomPayload(1024),
+			},
+			wantErr: nil,
+		},
+
+		{
+			name: "exceed max size",
+			want: &Message{
+				reqID:      99999,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type: 225,
+					Size: maxPayloadSize + 1,
+				},
+				Payload: randomPayload(maxPayloadSize + 1),
+			},
+			wantErr: &ErrPayloadTooLarge{},
+		},
+
+		{
+			name:    "clean close, no bytes sent",
+			want:    nil,
+			wantErr: io.EOF,
+		},
+		{
+			name: "truncated read",
+			want: &Message{
+				reqID:      99999,
+				frameFlags: flagZero,
+				Metadata: Metadata{
+					Type: 225,
+					Size: 1024,
+				},
+				Payload: randomPayload(512),
+			},
+			wantErr: io.ErrUnexpectedEOF,
+		},
 	}
 
-	t.Run("reads the declared length", func(t *testing.T) {
+	for _, tc := range cases {
 
-		msg := &Message{}
-		err := readPayload(io.NopCloser(bytes.NewReader(tail(1, 9, 3, []byte("abc")))), msg)
-		if err != nil {
-			t.Fatalf("readPayload: %v", err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
 
-		if msg.Flags != 1 || msg.Type != 9 || msg.Size != 3 {
-			t.Errorf("got {Flags:%d Type:%d Size:%d}, want {1 9 3}", msg.Flags, msg.Type, msg.Size)
-		}
-		if string(msg.Payload) != "abc" {
-			t.Errorf("payload = %q, want %q", msg.Payload, "abc")
-		}
-	})
+			pipe := &bytes.Buffer{}
 
-	t.Run("stops at the declared length", func(t *testing.T) {
+			_, err := pipe.Write(VersionOneMessageToBytes(tc.want))
+			require.NoError(t, err)
 
-		r := bytes.NewReader(tail(0, 1, 3, []byte("abcXYZ")))
+			got := &Message{}
 
-		msg := &Message{}
-		if err := readPayload(io.NopCloser(r), msg); err != nil {
-			t.Fatalf("readPayload: %v", err)
-		}
+			err = validateProtocol(pipe, got)
+			if err != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+				return
+			}
 
-		if string(msg.Payload) != "abc" {
-			t.Fatalf("payload = %q, want %q", msg.Payload, "abc")
-		}
-		if r.Len() != 3 {
-			t.Fatalf("%d bytes left, want 3 — payload read past its length", r.Len())
-		}
-	})
+			err = readPayload(pipe, got)
+			if err != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+				return
+			}
 
-	t.Run("zero length", func(t *testing.T) {
+			assert.ErrorIs(t, nil, tc.wantErr)
 
-		msg := &Message{}
-		if err := readPayload(io.NopCloser(bytes.NewReader(tail(0, 4, 0, nil))), msg); err != nil {
-			t.Fatalf("readPayload: %v", err)
-		}
+			if tc.want == nil {
+				got = nil
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
 
-		if len(msg.Payload) != 0 {
-			t.Errorf("payload = %q, want empty", msg.Payload)
-		}
-		if msg.Size != 0 {
-			t.Errorf("Size = %d, want 0", msg.Size)
-		}
-	})
+func TestWireE2E(t *testing.T) {
 
-	t.Run("declared length over max", func(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   []*Message
+		wantErr error
+	}{
+		{
+			name: "ordinary",
+			input: []*Message{
+				{
+					reqID:      44444,
+					frameFlags: flagStream,
+					Metadata: Metadata{
+						Type:  255,
+						Flags: 255,
+						Size:  1024,
+					},
+					Payload: randomPayload(1024),
+				},
+				{
+					reqID:      9999,
+					frameFlags: flagStream,
+					Metadata: Metadata{
+						Type:  108,
+						Flags: 108,
+						Size:  108,
+					},
+					Payload: randomPayload(108),
+				},
+			},
+		},
+	}
 
-		// no payload follows: the guard must fire before any allocation
-		err := readPayload(io.NopCloser(bytes.NewReader(tail(0, 1, maxPayloadSize+1, nil))), &Message{})
+	for _, tc := range cases {
 
-		var target *ErrPayloadTooLarge
-		if !errors.As(err, &target) {
-			t.Fatalf("err = %v, want *ErrPayloadTooLarge", err)
-		}
-	})
+		t.Run(tc.name, func(t *testing.T) {
 
-	t.Run("length at max is allowed", func(t *testing.T) {
+			pipe := &bytes.Buffer{}
 
-		payload := bytes.Repeat([]byte{7}, int(maxPayloadSize))
+			for _, msg := range tc.input {
+				err := writeFrame(pipe, msg)
+				assert.ErrorIs(t, err, tc.wantErr)
+				if tc.wantErr != nil {
+					return
+				}
+			}
 
-		msg := &Message{}
-		err := readPayload(io.NopCloser(bytes.NewReader(tail(0, 1, maxPayloadSize, payload))), msg)
-		if err != nil {
-			t.Fatalf("readPayload: %v", err)
-		}
+			for i := range tc.input {
 
-		if uint32(len(msg.Payload)) != maxPayloadSize {
-			t.Fatalf("read %d bytes, want %d", len(msg.Payload), maxPayloadSize)
-		}
-	})
+				got := &Message{}
+				err := validateProtocol(pipe, got)
+				assert.ErrorIs(t, err, tc.wantErr)
+				if tc.wantErr != nil {
+					return
+				}
 
-	t.Run("truncated header tail", func(t *testing.T) {
+				err = readPayload(pipe, got)
+				assert.ErrorIs(t, err, tc.wantErr)
+				if tc.wantErr != nil {
+					return
+				}
 
-		err := readPayload(io.NopCloser(bytes.NewReader([]byte{0, 1, 0})), &Message{})
+				assert.Equal(t, tc.input[i], got)
+			}
+		})
+	}
+}
 
-		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
-		}
-	})
+func TestStream(t *testing.T) {
 
-	t.Run("payload shorter than declared", func(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) {
 
-		err := readPayload(io.NopCloser(bytes.NewReader(tail(0, 1, 16, []byte("short")))), &Message{})
+		conn1, conn2 := net.Pipe()
 
-		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
-		}
+		metadata := &Message{}
+		peer1 := newStream(conn1, metadata, func() bool { return true })
+		peer2 := newStream(conn2, metadata, func() bool { return true })
+
+		t.Run("stream and verify checksums", func(t *testing.T) {
+
+			buf := randomPayload(2 << 20 * 50)
+			hash := crc32.Checksum(buf, crc32.MakeTable(crc32.Castagnoli))
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				_, err := peer1.Write(buf)
+				if err != nil {
+					errCh <- err
+				}
+				err = peer1.WriteChecksum()
+				errCh <- err
+			}()
+
+			readBuf := make([]byte, 2<<20*50)
+			_, readErr := peer2.Read(readBuf)
+			rHash := peer2.rHash.Sum32()
+			verificationFailed := peer2.ValidateRead()
+
+			require.NoError(t, <-errCh)
+			require.NoError(t, readErr)
+			require.NoError(t, verificationFailed)
+
+			if rHash != hash {
+				t.Errorf("hash mismatch")
+			}
+
+		})
+
+		t.Run("multi streams", func(t *testing.T) {
+
+			streams := []struct {
+				ack *messages.Ack
+				buf []byte
+			}{
+				{
+					ack: &messages.Ack{
+						Success: true,
+						Data:    binary.BigEndian.AppendUint32(nil, 10),
+					},
+					buf: randomPayload(10),
+				},
+				{
+					ack: &messages.Ack{
+						Success: true,
+						Data:    binary.BigEndian.AppendUint32(nil, 100),
+					},
+					buf: randomPayload(100),
+				},
+				{
+					ack: &messages.Ack{
+						Success: true,
+						Data:    binary.BigEndian.AppendUint32(nil, 1000),
+					},
+					buf: randomPayload(1000),
+				},
+				{
+					ack: &messages.Ack{
+						Success: true,
+						Data:    binary.BigEndian.AppendUint32(nil, 5000),
+					},
+					buf: randomPayload(5000),
+				},
+			}
+
+			writeErr := make(chan error, 1)
+
+			go func() {
+				var err error
+				for _, stream := range streams {
+
+					err = peer1.WriteStreamMessage(&ShortMessage{
+						Type:    uint8(messages.MessageType_ACK),
+						Message: stream.ack,
+					})
+					if err != nil {
+						peer1.Close()
+						break
+					}
+
+					_, err = peer1.Write(stream.buf)
+					if err != nil {
+						peer1.Close()
+						break
+					}
+
+					err = peer1.WriteChecksum()
+					if err != nil {
+						peer1.Close()
+						break
+					}
+				}
+				writeErr <- err
+			}()
+
+
+			var (
+				readErr error
+				msg     *Message
+			)
+			
+			for i := range len(streams) {
+
+				msg, readErr = peer2.ReadStreamMessage()
+				if readErr != nil {
+					peer2.Close()
+					break
+				}
+
+				ack := &messages.Ack{}
+				readErr = proto.Unmarshal(msg.Payload, ack)
+				if readErr != nil {
+					peer2.Close()
+					break
+				}
+
+				if !ack.Success || ack.Data == nil {
+					readErr = fmt.Errorf("corrupted ack")
+					peer2.Close()
+					break
+				}
+
+				length := binary.BigEndian.Uint32(ack.Data)
+
+				buf := make([]byte, length)
+				_, readErr = io.ReadFull(peer2, buf)
+				if readErr != nil {
+					peer2.Close()
+					break
+				}
+
+				readErr = peer2.ValidateRead()
+				if readErr != nil {
+					peer2.Close()
+					break
+				}
+
+				assert.True(t, proto.Equal(streams[i].ack, ack))
+				assert.Equal(t, streams[i].buf, buf)
+			}
+
+			require.NoError(t, errors.Join(<-writeErr, readErr))
+		})
+
+		t.Run("read write short messages", func(t *testing.T) {
+
+			ack := &messages.Ack{
+				Success: true,
+				Data:    randomPayload(5),
+			}
+
+			writeErr := make(chan error, 1)
+			go func() {
+				err := peer1.WriteStreamMessage(&ShortMessage{
+					Type:    uint8(messages.MessageType_ACK),
+					Message: ack,
+				})
+				writeErr <- err
+			}()
+
+			msg, readErr := peer2.ReadStreamMessage()
+			if msg.Type != uint8(messages.MessageType_ACK) {
+				t.Errorf("invalid message type received")
+			}
+			require.NoError(t, <-writeErr)
+			require.NoError(t, readErr)
+
+			res := &messages.Ack{}
+			err := proto.Unmarshal(msg.Payload, res)
+			require.NoError(t, err)
+
+			assert.True(t, proto.Equal(ack, res))
+		})
 	})
 }
