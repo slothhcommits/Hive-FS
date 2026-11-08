@@ -307,6 +307,141 @@ func (cs *chunkserver) sendRequest(ctx context.Context, addr string, msg *hive.M
 	return res, nil
 }
 
+func (cs *chunkserver) mintNewChunk(handle uint64) (*chunk, error) {
+
+	cs.chunkSet.Lock()
+	_, ok := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+
+	if ok {
+		return nil, internal.ErrExists
+	}
+
+	err := cs.store.makeNewChunkFiles(handle)
+	if err != nil {
+		return nil, err
+	}
+
+	checksums := newChecksums(handle)
+	chunk := newChunk(handle, checksums)
+
+	cs.chunkSet.Lock()
+
+	_, ok = cs.chunkSet.entries[handle]
+
+	if ok {
+		cs.chunkSet.Unlock()
+		cs.store.deleteChunkFiles(handle)
+		return nil, internal.ErrExists
+	}
+
+	cs.chunkSet.entries[handle] = chunk
+
+	cs.versionMap.Lock()
+	cs.versionMap.entries[handle] = 0
+	cs.versionMap.Unlock()
+
+	cs.chunkSet.Unlock()
+
+	return chunk, nil
+}
+
+func (cs *chunkserver) deletechunk(handle uint64) error {
+
+	cs.chunkSet.Lock()
+	delete(cs.chunkSet.entries, handle)
+	cs.chunkSet.Unlock()
+
+	cs.leaseMap.Lock()
+	delete(cs.leaseMap.entries, handle)
+	cs.leaseMap.Unlock()
+
+	cs.versionMap.Lock()
+	delete(cs.versionMap.entries, handle)
+	cs.versionMap.Unlock()
+
+	return cs.store.deleteChunkFiles(handle)
+}
+
+func (cs *chunkserver) verifyChunk(chunk *chunk) error {
+
+	f, err := cs.store.openFile(cs.makeChunkPath(chunk.handle))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	err = chunk.verify(f, 0, uint32(fi.Size()))
+
+	return err
+}
+
+func (cs *chunkserver) updateChunkVersion(handle uint64, version uint32) error {
+
+	cs.versionMap.Lock()
+	defer cs.versionMap.Unlock()
+
+	v, ok := cs.versionMap.entries[handle]
+	if !ok || (ok && v >= version) {
+		if !ok {
+			return internal.ErrUnavailable
+		}
+		if v > version {
+			return internal.ErrBadRequest
+		}
+		return nil
+	}
+
+	err := cs.store.logVersion(handle, version)
+	if err != nil {
+		return err
+	}
+
+	cs.versionMap.entries[handle] = version
+
+	// every lease grant is preceded by a version bump on every replica, so
+	// this is the one point where all replicas of a chunk are touched
+	// together before a primary exists. zeroing ctr here gives every lease
+	// a common origin with no message, no disk state, and no master
+	// involvement. ctr's lifetime is the lease, not the process.
+	cs.chunkSet.Lock()
+	chunk, chunkOk := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+	if chunkOk {
+		chunk.mu.Lock()
+		chunk.ctr = 0
+		chunk.mu.Unlock()
+	}
+
+	return nil
+}
+
+func (cs *chunkserver) downdateChunkVersion(handle uint64, version uint32) error {
+
+	cs.versionMap.Lock()
+	defer cs.versionMap.Unlock()
+
+	v, ok := cs.versionMap.entries[handle]
+	if !ok {
+		return internal.ErrUnavailable
+	}
+
+	if v > version {
+		err := cs.store.logVersion(handle, version)
+		if err != nil {
+			return err
+		}
+		cs.versionMap.entries[handle] = version
+	}
+
+	return nil
+}
+
 func (cs *chunkserver) ping(ctx context.Context, addr string) error {
 
 	req := &messages.Ack{
