@@ -505,6 +505,319 @@ func (cs *chunkserver) bufferSweepLoop() {
 	}
 }
 
+// master handlers
+
+func (cs *chunkserver) heartbeatLoop() {
+
+	defer cs.wg.Done()
+
+	for {
+		batch := []*messages.Chunkserver_ChunkInfo{}
+		garbage := []*chunk{}
+
+		cs.chunkSet.Lock()
+		cs.versionMap.Lock()
+		cs.leaseMap.Lock()
+
+		for _, chunk := range cs.chunkSet.entries {
+			handle := chunk.handle
+			v, ok := cs.versionMap.entries[handle]
+			if !ok {
+				garbage = append(garbage, chunk)
+				continue
+			}
+			_, ok = cs.leaseMap.entries[handle]
+			batch = append(batch, &messages.Chunkserver_ChunkInfo{
+				Id:          handle,
+				Version:     v,
+				ExtendLease: ok && time.Since(time.Unix(0, chunk.lastWrite.Load())) < heartbeatInterval,
+			})
+		}
+
+		cs.leaseMap.Unlock()
+		cs.versionMap.Unlock()
+		cs.chunkSet.Unlock()
+
+		for _, chunk := range garbage {
+			cs.deletechunk(chunk.handle)
+		}
+
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(cs.StorePath, &st); err != nil {
+			panic(err)
+		}
+
+		total := st.Blocks * uint64(st.Bsize)
+		avail := st.Bavail * uint64(st.Bsize)
+		util := uint32((total - avail) * 100 / total)
+
+		heartbeat := &messages.Chunkserver_Heartbeat{
+			Addr:     cs.ListenAddr,
+			DiskUtil: uint32(util),
+			Chunks:   batch,
+		}
+
+		payload, err := proto.Marshal(heartbeat)
+		if err != nil {
+			panic(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+		resMsg, err := cs.sendRequest(ctx, cs.MasterAddr, &hive.Message{
+			Payload: payload,
+			Metadata: hive.Metadata{
+				Type: uint8(messages.Chunkserver_MESSAGE_TYPE_HEARTBEAT),
+				Size: uint32(len(payload)),
+			},
+		})
+
+		if err == nil {
+			res := &messages.Master_HeartbeatRes{}
+			err = proto.Unmarshal(resMsg.Payload, res)
+			if err == nil {
+				cs.heartbeatResponseHandler(res)
+			}
+		}
+
+		cancel()
+
+		select {
+		case <-time.After(heartbeatInterval):
+		case <-cs.closeCh:
+			return
+		}
+	}
+}
+
+// a buffer whose commit never came, or failed, is never used again: a client
+// retry pushes a fresh one. a buffer swept too early only costs a retry, the
+// commit fails on the missing buffer
+
+func (cs *chunkserver) heartbeatResponseHandler(res *messages.Master_HeartbeatRes) {
+
+	cs.leaseMap.Lock()
+	for _, handle := range res.RevokeLease {
+		// be careful here
+		delete(cs.leaseMap.entries, handle)
+	}
+	cs.leaseMap.Unlock()
+
+	for _, handle := range res.Delete {
+		cs.chunkSet.Lock()
+		chunk, ok := cs.chunkSet.entries[handle]
+		cs.chunkSet.Unlock()
+		if ok {
+			chunk.mu.Lock()
+			cs.deletechunk(handle)
+			chunk.mu.Unlock()
+		}
+	}
+
+	for _, uv := range res.UpdateVersion {
+		handle := uv.Id
+		version := uv.Version
+		err := cs.downdateChunkVersion(handle, version)
+		if err != nil {
+			cs.chunkSet.Lock()
+			chunk, ok := cs.chunkSet.entries[handle]
+			cs.chunkSet.Unlock()
+			if ok {
+				chunk.mu.Lock()
+				cs.deletechunk(handle)
+				chunk.mu.Unlock()
+			}
+		}
+	}
+
+	for _, handle := range res.ExtendLease {
+		cs.chunkSet.Lock()
+		chunk, ok := cs.chunkSet.entries[handle]
+		cs.chunkSet.Unlock()
+		if ok {
+			cs.leaseMap.Lock()
+			_, ok := cs.leaseMap.entries[handle]
+			if ok {
+				cs.leaseMap.entries[chunk.handle] = time.Now()
+			}
+			cs.leaseMap.Unlock()
+		}
+	}
+
+}
+
+func (cs *chunkserver) updateVersionHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Master_UpdateVersion{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	version := req.Version
+	handle := req.Id
+
+	cs.chunkSet.Lock()
+	_, chunkOk := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+
+	cs.versionMap.Lock()
+	_, versionOK := cs.versionMap.entries[handle]
+	cs.versionMap.Unlock()
+
+	if !chunkOk && !versionOK {
+		if version != 1 {
+			return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, internal.ErrBadRequest)
+		}
+		_, err = cs.mintNewChunk(handle)
+		if err != nil {
+			return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, internal.ErrOpFailed)
+		}
+	}
+
+	if (!chunkOk && versionOK) || (chunkOk && !versionOK) {
+
+		if chunkOk {
+			cs.chunkSet.Lock()
+			chunk, chunkOk := cs.chunkSet.entries[handle]
+			cs.chunkSet.Unlock()
+			if chunkOk {
+				chunk.mu.Lock()
+				cs.deletechunk(handle)
+				chunk.mu.Unlock()
+			}
+		}
+
+		if versionOK {
+			cs.versionMap.Lock()
+			delete(cs.versionMap.entries, handle)
+			cs.versionMap.Unlock()
+		}
+
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, internal.ErrUnavailable)
+	}
+
+	err = cs.updateChunkVersion(handle, version)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_OP_FAILED, err)
+	}
+
+	ack := &messages.Ack{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Size: uint32(len(payload)),
+			Type: uint8(messages.MessageType_ACK),
+		},
+	}
+}
+
+func (cs *chunkserver) leaseGrantHandler(msg *hive.Message) *hive.Message {
+
+	req := &messages.Master_GrantLease{}
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[req.Id]
+	cs.chunkSet.Unlock()
+
+	if !ok {
+		return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, internal.ErrUnavailable)
+	}
+
+	if !chunk.mu.TryLock() {
+		return internal.MakeErrMessage(messages.Error_CODE_CHUNKSERVER_BUSY, internal.ErrBusy)
+	}
+	defer chunk.mu.Unlock()
+
+	cs.leaseMap.Lock()
+	cs.leaseMap.entries[chunk.handle] = time.Now()
+	cs.leaseMap.Unlock()
+
+	ack := &messages.Ack{
+		Success: true,
+	}
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Type: uint8(messages.MessageType_ACK),
+			Size: uint32(len(payload)),
+		},
+	}
+}
+
+func (cs *chunkserver) revokeLease(msg *hive.Message) *hive.Message {
+
+	req := &messages.Master_RevokeLease{}
+
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
+	}
+
+	cs.leaseMap.Lock()
+	for _, handle := range req.Handles {
+		// be careful here
+		delete(cs.leaseMap.entries, handle)
+	}
+	cs.leaseMap.Unlock()
+
+	ack := &messages.Ack{
+		Success: true,
+	}
+
+	payload, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+
+	return &hive.Message{
+		Payload: payload,
+		Metadata: hive.Metadata{
+			Type: uint8(messages.MessageType_ACK),
+			Size: uint32(len(payload)),
+		},
+	}
+}
+
+func (cs *chunkserver) deleteChunkHandler(msg *hive.Message) {
+
+	req := &messages.Master_DeleteChunk{}
+	err := proto.Unmarshal(msg.Payload, req)
+	if err != nil {
+		return
+	}
+
+	handle := req.Handle
+
+	cs.chunkSet.Lock()
+	chunk, ok := cs.chunkSet.entries[handle]
+	cs.chunkSet.Unlock()
+
+	if ok {
+		chunk.mu.Lock()
+		defer chunk.mu.Unlock()
+	}
+
+	cs.deletechunk(handle)
+}
+
 func (cs *chunkserver) ping(ctx context.Context, addr string) error {
 
 	req := &messages.Ack{
