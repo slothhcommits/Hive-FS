@@ -1253,3 +1253,71 @@ func TestReplication(t *testing.T) {
 	})
 }
 
+// ================================================================ readHandler
+
+func readMeta(h uint64, ver uint32, off int64, n uint32) *messages.Client_ReadStreamMetadata {
+	return &messages.Client_ReadStreamMetadata{ChunkId: h, Version: ver, Offset: off, Length: n}
+}
+
+func TestReadHandler(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(1, 2*blockSize+5000)
+	readType := uint8(messages.Client_MESSAGE_TYPE_READ_STREAM)
+
+	badMeta := func(name string, setup func(*chunkserver), meta *messages.Client_ReadStreamMetadata, code messages.Error_Code) {
+		t.Run(name, func(t *testing.T) {
+			cs := newTestServer(t)
+			if setup != nil {
+				setup(cs)
+			}
+			client, server := streamPair(t, readType, meta)
+			cs.readHandler(server)
+			readErrAck(t, client, code)
+		})
+	}
+
+	badMeta("unavailable chunk", nil, readMeta(5, 1, 0, 10), messages.Error_CODE_UNAVAILABLE)
+	badMeta("greater version", func(cs *chunkserver) { seedChunk(t, cs, 5, 2, data) }, readMeta(5, 3, 0, 10), messages.Error_CODE_UNAVAILABLE)
+	badMeta("offset greater than file size", func(cs *chunkserver) { seedChunk(t, cs, 5, 2, pseudoData(1, 100)) }, readMeta(5, 2, 101, 10), messages.Error_CODE_BAD_REQUEST)
+
+	t.Run("stream and validate", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 5, 2, data)
+
+		cases := []struct {
+			name    string
+			off     int64
+			length  uint32
+			wantLen uint32
+		}{
+			{"unaligned window", 100, 70_000, 70_000},
+			{"length clamped to the end", 100, 1 << 30, uint32(len(data) - 100)},
+			{"whole chunk", 0, uint32(len(data)), uint32(len(data))},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				client, server := streamPair(t, readType, readMeta(5, 2, tc.off, tc.length))
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					cs.readHandler(server)
+				}()
+
+				hdr, err := client.ReadStreamMessage()
+				require.NoError(t, err)
+				require.Equal(t, uint8(messages.Chunkserver_MESSAGE_TYPE_READ_STREAM), hdr.Type)
+				rs := &messages.Chunkserver_ReadStream{}
+				require.NoError(t, proto.Unmarshal(hdr.Payload, rs))
+				require.Equal(t, tc.wantLen, rs.Length)
+
+				buf := make([]byte, rs.Length)
+				_, err = io.ReadFull(client, buf)
+				require.NoError(t, err)
+				require.NoError(t, client.ValidateRead())
+				assert.Equal(t, data[tc.off:int(tc.off)+int(rs.Length)], buf)
+				<-done
+			})
+		}
+	})
+}
+
