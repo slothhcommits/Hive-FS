@@ -1321,3 +1321,472 @@ func TestReadHandler(t *testing.T) {
 	})
 }
 
+// ===================================================================== stream
+
+func TestStream_Single(t *testing.T) {
+	leakCheck(t)
+	cs := newTestServer(t)
+	recv := newFakePeer(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	data := pseudoData(5, 300_000)
+	meta := &messages.Client_WriteStreamMetadata{
+		BufferId: 3, ChunkId: 9, Offset: 128, Size: uint32(len(data)),
+		OriginAddr: "origin:1", PeerAddr: "peer:1", ForwardList: []string{"a:1", "b:2"},
+	}
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cs.stream(ctx, &forwardStreamPeer{addr: recv.addr, metadata: meta, size: int64(len(data)), src: pr})
+	}()
+	go func() {
+		for off := 0; off < len(data); off += 10_000 {
+			pw.Write(data[off:min(off+10_000, len(data))])
+		}
+	}()
+
+	s := recv.nextStream(t)
+	assert.Equal(t, uint8(messages.Chunkserver_MESSAGE_TYPE_DATA_STREAM), s.Metadata.Type)
+	got := &messages.Client_WriteStreamMetadata{}
+	require.NoError(t, proto.Unmarshal(s.Metadata.Payload, got))
+	assert.True(t, proto.Equal(meta, got), "metadata mismatch: %v", got)
+
+	buf := make([]byte, len(data))
+	_, err := io.ReadFull(s, buf)
+	require.NoError(t, err)
+	assert.Equal(t, data, buf)
+	require.NoError(t, s.ValidateRead())
+
+	require.NoError(t, s.WriteStreamMessage(&hive.ShortMessage{
+		Type: uint8(messages.MessageType_ACK), Message: &messages.Ack{Success: true},
+	}))
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(waitFor):
+		t.Fatal("stream did not return after the ack")
+	}
+	s.Close()
+}
+
+const chainFailMsg = "injected failure"
+
+type hopResult struct {
+	meta          *messages.Client_WriteStreamMetadata
+	data          []byte
+	validateErr   error
+	downstreamErr error
+}
+
+func chainHop(ctx context.Context, cs *chunkserver, self *fakePeer, nextAddr, fail string, out chan<- hopResult) {
+	var s *hive.Stream
+	select {
+	case s = <-self.tr.Streams():
+	case <-time.After(waitFor):
+		out <- hopResult{validateErr: errors.New("no stream arrived")}
+		return
+	}
+	defer s.Close()
+
+	meta := &messages.Client_WriteStreamMetadata{}
+	if err := proto.Unmarshal(s.Metadata.Payload, meta); err != nil {
+		out <- hopResult{validateErr: err}
+		return
+	}
+
+	buf := make([]byte, meta.Size)
+	var reader io.Reader = s
+	var done chan error
+	var pw *io.PipeWriter
+	if nextAddr != "" && fail == "" {
+		var pr *io.PipeReader
+		pr, pw = io.Pipe()
+		done = make(chan error, 1)
+		go func() {
+			done <- cs.stream(ctx, &forwardStreamPeer{addr: nextAddr, metadata: meta, size: int64(meta.Size), src: pr})
+		}()
+		reader = io.TeeReader(s, pw)
+	}
+
+	res := hopResult{meta: meta, data: buf}
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		res.validateErr = err
+	} else {
+		res.validateErr = s.ValidateRead()
+	}
+
+	ack := &messages.Ack{Success: true}
+	switch {
+	case fail != "":
+		ack = &messages.Ack{Err: &messages.Error{Code: messages.Error_CODE_CHUNKSERVER_STREAM_FAILED, Message: fail}}
+	case done != nil:
+		res.downstreamErr = <-done
+		pw.Close()
+		if res.downstreamErr != nil {
+			ack = &messages.Ack{Err: &messages.Error{Code: messages.Error_CODE_CHUNKSERVER_STREAM_FAILED, Message: res.downstreamErr.Error()}}
+		}
+	}
+	s.WriteStreamMessage(&hive.ShortMessage{Type: uint8(messages.MessageType_ACK), Message: ack})
+	out <- res
+}
+
+func chainData() ([]byte, *messages.Client_WriteStreamMetadata) {
+	data := pseudoData(8, 200_000)
+	return data, &messages.Client_WriteStreamMetadata{
+		BufferId: 4, ChunkId: 6, Offset: 0, Size: uint32(len(data)),
+		OriginAddr: "origin", ForwardList: []string{"x:1"},
+	}
+}
+
+// runChain streams through 5 hops, or through failAt+1 hops when failAt >= 0
+// where the last one answers with an error.
+func runChain(t *testing.T, failAt int) (srcErr error, hops []hopResult) {
+	t.Helper()
+	cs := newTestServer(t)
+	n := 5
+	if failAt >= 0 {
+		n = failAt + 1
+	}
+	peers := make([]*fakePeer, n)
+	for i := range peers {
+		peers[i] = newFakePeer(t, nil)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	outs := make([]chan hopResult, n)
+	for i := range peers {
+		outs[i] = make(chan hopResult, 1)
+		next, fail := "", ""
+		if i+1 < n {
+			next = peers[i+1].addr
+		}
+		if failAt >= 0 && i == failAt {
+			fail = chainFailMsg
+		}
+		go chainHop(ctx, cs, peers[i], next, fail, outs[i])
+	}
+
+	data, meta := chainData()
+	srcErr = cs.stream(ctx, &forwardStreamPeer{addr: peers[0].addr, metadata: meta, size: int64(len(data)), src: bytes.NewReader(data)})
+
+	hops = make([]hopResult, n)
+	for i := range outs {
+		select {
+		case hops[i] = <-outs[i]:
+		case <-time.After(waitFor):
+			t.Fatalf("hop %d did not finish", i)
+		}
+	}
+	return srcErr, hops
+}
+
+func TestStream_Chain(t *testing.T) {
+	leakCheck(t)
+	data, meta := chainData()
+
+	t.Run("success", func(t *testing.T) {
+		srcErr, hops := runChain(t, -1)
+		require.NoError(t, srcErr)
+		require.Len(t, hops, 5)
+		for i, h := range hops {
+			assert.NoError(t, h.validateErr, "hop %d checksum", i)
+			assert.NoError(t, h.downstreamErr, "hop %d downstream", i)
+			assert.Equal(t, data, h.data, "hop %d content", i)
+			assert.True(t, proto.Equal(meta, h.meta), "hop %d metadata", i)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{{"error in the middle", 2}, {"error at the end", 4}} {
+		t.Run(tc.name, func(t *testing.T) {
+			srcErr, hops := runChain(t, tc.failAt)
+			assert.EqualError(t, srcErr, chainFailMsg)
+			require.Len(t, hops, tc.failAt+1)
+			for i, h := range hops {
+				assert.NoError(t, h.validateErr, "hop %d checksum", i)
+				assert.Equal(t, data, h.data, "hop %d content", i)
+				if i < tc.failAt {
+					assert.EqualError(t, h.downstreamErr, chainFailMsg, "hop %d must see the failure", i)
+				}
+			}
+		})
+	}
+}
+
+// ================================================================== ping pong
+
+func TestPingPong(t *testing.T) {
+	leakCheck(t)
+	a, b := newTestServer(t), newTestServer(t)
+	serve(t, b)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.ping(ctx, b.ListenAddr))
+
+	res := b.pong(pingMsg())
+	ack := requireOK(t, res)
+	assert.True(t, ack.Success)
+}
+
+// =============================================================== validateStream
+
+func TestValidateStream(t *testing.T) {
+	leakCheck(t)
+	const h = uint64(11)
+	writeType := uint8(messages.Client_MESSAGE_TYPE_WRITE_DATA_STREAM)
+
+	seed := func(t *testing.T, cs *chunkserver) { seedChunk(t, cs, h, 1, pseudoData(1, 1000)) }
+	meta := func(id uint32, off int64, size uint32) *messages.Client_WriteStreamMetadata {
+		return &messages.Client_WriteStreamMetadata{BufferId: id, ChunkId: h, Offset: off, Size: size}
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*testing.T, *chunkserver)
+		meta  *messages.Client_WriteStreamMetadata
+		code  messages.Error_Code
+		msg   string
+	}{
+		{"size above 16mb", seed, meta(1, 0, 16<<20+1), messages.Error_CODE_BAD_REQUEST, "bad request"},
+		{"offset below -1", seed, meta(1, -2, 10), messages.Error_CODE_BAD_REQUEST, "bad request"},
+		{"offset plus size overflows the chunk", seed, meta(1, maxChunkSize-10, 20), messages.Error_CODE_OVERFLOW, "bad request"},
+		{"unavailable chunk", nil, meta(1, 0, 10), messages.Error_CODE_UNAVAILABLE, "unavailable"},
+		{"record append on a full chunk overflows", func(t *testing.T, cs *chunkserver) {
+			seed(t, cs)
+			require.NoError(t, os.Truncate(cs.store.makeChunkPath(h), maxChunkSize-5))
+		}, meta(1, -1, 10), messages.Error_CODE_OVERFLOW, "bad request"},
+		{"buffer id and chunk id collide", func(t *testing.T, cs *chunkserver) {
+			seed(t, cs)
+			putBuffer(cs, 5, h, nil, false)
+		}, meta(5, 0, 10), messages.Error_CODE_EXISTS, "exists"},
+		{"only buffer id collides", func(t *testing.T, cs *chunkserver) {
+			seed(t, cs)
+			putBuffer(cs, 5, h+1, nil, false)
+		}, meta(5, 0, 10), messages.Error_CODE_COLLISION, "collision"},
+		{"concurrent write limit reached", func(t *testing.T, cs *chunkserver) {
+			seed(t, cs)
+			for i := 0; i < concurrentWriteLimit; i++ {
+				putBuffer(cs, uint32(1000+i), 99, nil, false)
+			}
+		}, meta(1, 0, 10), messages.Error_CODE_CHUNKSERVER_BUSY, "busy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := newTestServer(t)
+			if tc.setup != nil {
+				tc.setup(t, cs)
+			}
+			client, server := streamPair(t, writeType, tc.meta)
+			assert.Nil(t, cs.validateStream(server))
+			ack := readErrAck(t, client, tc.code)
+			assert.Contains(t, ack.Err.Message, tc.msg)
+		})
+	}
+
+	t.Run("valid normal write stream", func(t *testing.T) {
+		cs := newTestServer(t)
+		seed(t, cs)
+		in := meta(1, 100, 64)
+		client, server := streamPair(t, writeType, in)
+
+		got := cs.validateStream(server)
+		require.NotNil(t, got)
+		assert.True(t, proto.Equal(in, got))
+		e, ok := bufferOf(cs, 1)
+		require.True(t, ok)
+		assert.Len(t, e.buf, 64)
+		assert.Equal(t, h, e.chunkHandle)
+		assert.True(t, e.pushedAt.IsZero())
+
+		server.Close()
+		_, err := client.ReadStreamMessage()
+		assert.Error(t, err, "no error message may have been sent")
+	})
+
+	t.Run("valid record append stream", func(t *testing.T) {
+		cs := newTestServer(t)
+		seed(t, cs)
+		client, server := streamPair(t, writeType, meta(2, -1, 64))
+
+		got := cs.validateStream(server)
+		require.NotNil(t, got)
+		assert.EqualValues(t, 1000, got.Offset, "offset resolves to the current chunk size")
+		e, ok := bufferOf(cs, 2)
+		require.True(t, ok)
+		assert.Len(t, e.buf, 64)
+
+		server.Close()
+		_, err := client.ReadStreamMessage()
+		assert.Error(t, err)
+	})
+}
+
+// ============================================================== forwardStream
+
+func TestForwardStream_NobodyPongs(t *testing.T) {
+	leakCheck(t)
+	dead := []string{freeAddr(t), freeAddr(t)}
+	storePath := t.TempDir()
+
+	synctest.Test(t, func(t *testing.T) {
+		cs := NewChunkServer(&ChunkServerOpts{ListenAddr: "127.0.0.1:1", MasterAddr: "127.0.0.1:1", StorePath: storePath})
+		defer cs.Close()
+
+		start := time.Now()
+		err := cs.forwardStream(context.Background(), &forwardStreamPeer{
+			metadata: &messages.Client_WriteStreamMetadata{ForwardList: dead},
+			src:      bytes.NewReader(nil),
+		})
+		assert.ErrorIs(t, err, internal.ErrOpFailed)
+		assert.GreaterOrEqual(t, time.Since(start), pingTimeout)
+	})
+}
+
+func TestForwardStream_EveryBodyPongs(t *testing.T) {
+	leakCheck(t)
+	cs := newTestServer(t)
+
+	type received struct {
+		from *fakePeer
+		s    *hive.Stream
+	}
+	got := make(chan received, 3)
+	var peers []*fakePeer
+	for i := 0; i < 3; i++ {
+		p := newFakePeer(t, ackHandler)
+		peers = append(peers, p)
+		go func() {
+			if s, ok := <-p.tr.Streams(); ok {
+				got <- received{p, s}
+			}
+		}()
+	}
+
+	data := pseudoData(6, 100_000)
+	meta := &messages.Client_WriteStreamMetadata{
+		BufferId: 2, ChunkId: 3, Offset: 10, Size: uint32(len(data)),
+		ForwardList: []string{peers[0].addr, peers[1].addr, peers[2].addr},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cs.forwardStream(ctx, &forwardStreamPeer{metadata: meta, size: int64(len(data)), src: bytes.NewReader(data)})
+	}()
+
+	var r received
+	select {
+	case r = <-got:
+	case <-time.After(waitFor):
+		t.Fatal("no peer received the stream")
+	}
+	assert.Contains(t, []string{peers[0].addr, peers[1].addr, peers[2].addr}, r.from.addr)
+	assert.Equal(t, uint8(messages.Chunkserver_MESSAGE_TYPE_DATA_STREAM), r.s.Metadata.Type)
+	gotMeta := &messages.Client_WriteStreamMetadata{}
+	require.NoError(t, proto.Unmarshal(r.s.Metadata.Payload, gotMeta))
+	assert.True(t, proto.Equal(meta, gotMeta))
+
+	buf := make([]byte, len(data))
+	_, err := io.ReadFull(r.s, buf)
+	require.NoError(t, err)
+	assert.Equal(t, data, buf)
+	require.NoError(t, r.s.ValidateRead())
+	require.NoError(t, r.s.WriteStreamMessage(&hive.ShortMessage{
+		Type: uint8(messages.MessageType_ACK), Message: &messages.Ack{Success: true},
+	}))
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(waitFor):
+		t.Fatal("forwardStream did not return")
+	}
+	r.s.Close()
+}
+
+// ============================================================== streamHandler
+
+type chain struct {
+	h     uint64
+	nodes [3]*chunkserver
+}
+
+func newChain(t *testing.T, h uint64) *chain {
+	t.Helper()
+	c := &chain{h: h}
+	for i := range c.nodes {
+		cs := newTestServer(t)
+		seedChunk(t, cs, h, 1, pseudoData(1, 500))
+		serve(t, cs)
+		c.nodes[i] = cs
+	}
+	grantLease(c.nodes[0], h, time.Now())
+	return c
+}
+
+// push sends data to the head of the chain as a client would, optionally with a bad trailing checksum.
+func (c *chain) push(t *testing.T, bufferID uint32, data []byte, badChecksum bool) *messages.Ack {
+	t.Helper()
+	ct := hive.NewTCPTransport()
+	t.Cleanup(func() { ct.Close() })
+
+	meta := &messages.Client_WriteStreamMetadata{
+		BufferId: bufferID, ChunkId: c.h, Offset: 0, Size: uint32(len(data)), OriginAddr: "client",
+		ForwardList: []string{c.nodes[0].ListenAddr, c.nodes[1].ListenAddr, c.nodes[2].ListenAddr},
+	}
+	s, err := ct.OpenStream(context.Background(), c.nodes[0].ListenAddr,
+		msgOf(uint8(messages.Client_MESSAGE_TYPE_WRITE_DATA_STREAM), meta))
+	require.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	_, err = s.Write(data)
+	require.NoError(t, err)
+	if badChecksum {
+		_, err = s.Write([]byte{0xde, 0xad, 0xbe, 0xef})
+		require.NoError(t, err)
+	} else {
+		require.NoError(t, s.WriteChecksum())
+	}
+	return readAck(t, s)
+}
+
+func TestStreamHandler_Chain(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(4, 250_000)
+
+	t.Run("successful daisy chain", func(t *testing.T) {
+		c := newChain(t, 1)
+		ack := c.push(t, 1, data, false)
+		require.True(t, ack.Success, "%v", ack.Err)
+
+		for i, cs := range c.nodes {
+			e, ok := bufferOf(cs, 1)
+			require.True(t, ok, "node %d holds no buffer", i)
+			assert.Equal(t, data, e.buf, "node %d content", i)
+			assert.Equal(t, c.h, e.chunkHandle)
+			assert.False(t, e.pushedAt.IsZero(), "node %d buffer not marked pushed", i)
+		}
+	})
+
+	t.Run("checksum failure drops downstream buffers and fails upstream", func(t *testing.T) {
+		c := newChain(t, 1)
+		ack := c.push(t, 1, data, true)
+		require.False(t, ack.Success)
+		require.NotNil(t, ack.Err)
+		assert.Equal(t, messages.Error_CODE_CHUNKSERVER_STREAM_FAILED, ack.Err.Code)
+		assert.Contains(t, ack.Err.Message, "corrupted stream")
+
+		for i, cs := range c.nodes {
+			require.Eventually(t, func() bool {
+				_, ok := bufferOf(cs, 1)
+				return !ok
+			}, waitFor, 10*time.Millisecond, "node %d still holds the buffer", i)
+		}
+	})
+}
+
