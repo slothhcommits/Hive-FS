@@ -908,3 +908,231 @@ func TestDowndateChunkVersion(t *testing.T) {
 	})
 }
 
+// ============================================================ heartbeat loop
+
+func TestHeartbeatLoop(t *testing.T) {
+	leakCheck(t)
+	cs := newTestServer(t)
+
+	now := time.Now()
+	recent := now.UnixNano()
+	old := now.Add(-time.Hour).UnixNano()
+	active := now.Add(-30 * time.Second)
+	expired := now.Add(-2 * leaseTimeout)
+
+	type seed struct {
+		handle     uint64
+		version    uint32
+		lease      time.Time // zero means no lease
+		lastWrite  int64
+		wantExtend bool
+	}
+	seeds := []seed{
+		{1, 1, active, recent, true},
+		{2, 2, active, old, false},
+		{3, 3, expired, recent, true}, // the lease age is not consulted
+		{4, 4, expired, old, false},
+		{5, 5, time.Time{}, recent, false},
+		{6, 6, time.Time{}, 0, false},
+		{7, 7, time.Time{}, 0, false}, // deleted by the response
+		{8, 5, time.Time{}, 0, false}, // downdated by the response
+	}
+	for _, s := range seeds {
+		c := seedChunk(t, cs, s.handle, s.version, nil)
+		if !s.lease.IsZero() {
+			grantLease(cs, s.handle, s.lease)
+		}
+		c.lastWrite.Store(s.lastWrite)
+	}
+	// garbage: a chunk with no version entry
+	cs.chunkSet.Lock()
+	cs.chunkSet.entries[20] = newChunk(20, newChecksums(20))
+	cs.chunkSet.Unlock()
+	// a version entry with no chunk is never visited by the loop
+	cs.versionMap.Lock()
+	cs.versionMap.entries[21] = 9
+	cs.versionMap.Unlock()
+
+	response := &messages.Master_HeartbeatRes{
+		RevokeLease:   []uint64{1},
+		Delete:        []uint64{7},
+		UpdateVersion: []*messages.Master_UpdateVersion{{Id: 8, Version: 3}},
+		ExtendLease:   []uint64{2, 5},
+	}
+
+	hbs := make(chan *messages.Chunkserver_Heartbeat, 1)
+	master := newFakePeer(t, func(r hive.Request) {
+		hb := &messages.Chunkserver_Heartbeat{}
+		if err := proto.Unmarshal(r.Message().Payload, hb); err != nil {
+			t.Errorf("bad heartbeat: %v", err)
+			return
+		}
+		select {
+		case hbs <- hb:
+		default:
+		}
+		r.Respond(msgOf(uint8(messages.MessageType_ACK), response))
+	})
+	cs.MasterAddr = master.addr
+
+	cs.wg.Add(1)
+	go cs.heartbeatLoop()
+	t.Cleanup(func() {
+		cs.Close()
+		cs.wg.Wait()
+	})
+
+	var hb *messages.Chunkserver_Heartbeat
+	select {
+	case hb = <-hbs:
+	case <-time.After(waitFor):
+		t.Fatal("no heartbeat received")
+	}
+
+	assert.Equal(t, cs.ListenAddr, hb.Addr)
+	assert.LessOrEqual(t, hb.DiskUtil, uint32(100))
+	infos := map[uint64]*messages.Chunkserver_ChunkInfo{}
+	for _, ci := range hb.Chunks {
+		infos[ci.Id] = ci
+	}
+	assert.Len(t, infos, len(seeds), "only chunks with a version entry are reported")
+	assert.NotContains(t, infos, uint64(20))
+	assert.NotContains(t, infos, uint64(21))
+	for _, s := range seeds {
+		ci, ok := infos[s.handle]
+		if !assert.True(t, ok, "handle %d missing", s.handle) {
+			continue
+		}
+		assert.Equal(t, s.version, ci.Version, "handle %d version", s.handle)
+		assert.Equal(t, s.wantExtend, ci.ExtendLease, "handle %d extend lease", s.handle)
+	}
+
+	// the response mutates the state
+	require.Eventually(t, func() bool { _, ok := leaseOf(cs, 1); return !ok }, waitFor, 10*time.Millisecond, "lease 1 not revoked")
+	require.Eventually(t, func() bool {
+		_, c := chunkOf(cs, 7)
+		_, v := versionOf(cs, 7)
+		return !c && !v
+	}, waitFor, 10*time.Millisecond, "chunk 7 not deleted")
+	require.Eventually(t, func() bool { v, _ := versionOf(cs, 8); return v == 3 }, waitFor, 10*time.Millisecond, "chunk 8 not downdated")
+	require.Eventually(t, func() bool {
+		l, ok := leaseOf(cs, 2)
+		return ok && time.Since(l) < 5*time.Second
+	}, waitFor, 10*time.Millisecond, "lease 2 not extended")
+
+	_, ok := leaseOf(cs, 5)
+	assert.False(t, ok, "extending must not create a lease that does not exist")
+	_, ok = versionOf(cs, 21)
+	assert.True(t, ok)
+}
+
+// ======================================================== updateVersionHandler
+
+func TestUpdateVersionHandler(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("nothing exists, version 1 creates the chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		requireOK(t, cs.updateVersionHandler(updateMsg(10, 1)))
+		_, ok := chunkOf(cs, 10)
+		assert.True(t, ok)
+		v, ok := versionOf(cs, 10)
+		assert.True(t, ok)
+		assert.Equal(t, uint32(1), v)
+		assert.Equal(t, uint32(1), rawVersion(t, cs.store, 10))
+	})
+
+	t.Run("nothing exists, version above 1 is rejected", func(t *testing.T) {
+		cs := newTestServer(t)
+		ack := requireErrCode(t, cs.updateVersionHandler(updateMsg(10, 3)), messages.Error_CODE_OP_FAILED)
+		assert.Contains(t, ack.Err.Message, "bad request")
+		_, ok := chunkOf(cs, 10)
+		assert.False(t, ok)
+		_, ok = versionOf(cs, 10)
+		assert.False(t, ok)
+	})
+
+	t.Run("chunk exists without version", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 5, 1, nil)
+		cs.versionMap.Lock()
+		delete(cs.versionMap.entries, 5)
+		cs.versionMap.Unlock()
+
+		ack := requireErrCode(t, cs.updateVersionHandler(updateMsg(5, 2)), messages.Error_CODE_OP_FAILED)
+		assert.Contains(t, ack.Err.Message, "unavailable")
+		_, ok := chunkOf(cs, 5)
+		assert.False(t, ok)
+		assert.NoFileExists(t, cs.store.makeChunkPath(5))
+	})
+
+	t.Run("version exists without chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		cs.versionMap.Lock()
+		cs.versionMap.entries[6] = 3
+		cs.versionMap.Unlock()
+
+		ack := requireErrCode(t, cs.updateVersionHandler(updateMsg(6, 4)), messages.Error_CODE_OP_FAILED)
+		assert.Contains(t, ack.Err.Message, "unavailable")
+		_, ok := versionOf(cs, 6)
+		assert.False(t, ok)
+	})
+
+	t.Run("happy path", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 7, 2, pseudoData(1, 100))
+		c.mu.Lock()
+		c.ctr = 9
+		c.mu.Unlock()
+
+		requireOK(t, cs.updateVersionHandler(updateMsg(7, 4)))
+		v, _ := versionOf(cs, 7)
+		assert.Equal(t, uint32(4), v)
+		assert.Equal(t, uint32(4), rawVersion(t, cs.store, 7))
+		assert.Zero(t, ctrOf(c))
+	})
+}
+
+// ============================================================ leaseGrantHandler
+
+func TestLeaseGrantHandler(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("busy during re-replication", func(t *testing.T) {
+		cs := newTestServer(t)
+		release := stallReplication(t, cs, 50)
+		requireBusy(t, cs.leaseGrantHandler(grantMsg(50)))
+		release()
+	})
+
+	t.Run("busy during local copy", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 51, 1, nil)
+		holdChunk(t, c)
+		requireBusy(t, cs.leaseGrantHandler(grantMsg(51)))
+	})
+
+	t.Run("busy during secondary write", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 52, 1, nil)
+		holdChunk(t, c)
+		requireBusy(t, cs.leaseGrantHandler(grantMsg(52)))
+	})
+
+	t.Run("busy during primary write", func(t *testing.T) {
+		cs := newTestServer(t)
+		release := stallPrimary(t, cs, 53)
+		requireBusy(t, cs.leaseGrantHandler(grantMsg(53)))
+		release()
+	})
+
+	t.Run("happy path", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 54, 1, nil)
+		requireOK(t, cs.leaseGrantHandler(grantMsg(54)))
+		l, ok := leaseOf(cs, 54)
+		require.True(t, ok)
+		assert.WithinDuration(t, time.Now(), l, 2*time.Second)
+	})
+}
+
