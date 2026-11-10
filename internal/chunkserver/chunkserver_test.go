@@ -2193,3 +2193,197 @@ func TestSecondaryWriteHandler(t *testing.T) {
 	})
 }
 
+// ============================================================== bufferSweepLoop
+
+func TestBufferSweepLoop(t *testing.T) {
+	storePath := t.TempDir()
+
+	synctest.Test(t, func(t *testing.T) {
+		cs := NewChunkServer(&ChunkServerOpts{ListenAddr: "127.0.0.1:1", MasterAddr: "127.0.0.1:1", StorePath: storePath})
+		putBuffer(cs, 1, 10, []byte("still filling"), false)
+		putBuffer(cs, 2, 10, []byte("pushed"), true)
+
+		cs.wg.Add(1)
+		go cs.bufferSweepLoop()
+
+		time.Sleep(bufferTTL + 2*bufferSweepInterval)
+		synctest.Wait()
+		_, ok := bufferOf(cs, 1)
+		assert.True(t, ok, "a buffer that never finished its push is never swept")
+		_, ok = bufferOf(cs, 2)
+		assert.False(t, ok, "a pushed buffer is swept after the ttl")
+
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		_, ok = bufferOf(cs, 1)
+		assert.True(t, ok)
+
+		cs.Close()
+		cs.wg.Wait()
+	})
+}
+
+// ================================================================== cluster
+
+type clusterNode struct {
+	addr    string
+	cs      *chunkserver
+	cancel  context.CancelFunc
+	stopped chan struct{}
+}
+
+func bootNode(t *testing.T, addr, dir, master string) *clusterNode {
+	t.Helper()
+	n := &clusterNode{addr: addr, stopped: make(chan struct{})}
+	n.cs = NewChunkServer(&ChunkServerOpts{ListenAddr: addr, MasterAddr: master, StorePath: dir})
+	ctx, cancel := context.WithCancel(context.Background())
+	n.cancel = cancel
+	go func() {
+		n.cs.Boot(ctx)
+		close(n.stopped)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-n.stopped
+	})
+	waitListening(t, addr)
+	return n
+}
+
+func (n *clusterNode) stop(t *testing.T) time.Duration {
+	t.Helper()
+	start := time.Now()
+	n.cancel()
+	select {
+	case <-n.stopped:
+	case <-time.After(waitFor):
+		t.Fatalf("node %s did not shut down", n.addr)
+	}
+	return time.Since(start)
+}
+
+func TestCluster(t *testing.T) {
+	leakCheck(t)
+	const nChunks, writesPerChunk, recSize = 16, 4, 30_000
+
+	var addrs [3]string
+	var dirs [3]string
+	for i := range addrs {
+		addrs[i] = freeAddr(t)
+		dirs[i] = t.TempDir()
+	}
+	master := freeAddr(t) // nothing listens: heartbeats fail fast
+	var nodes [3]*clusterNode
+	boot := func() {
+		for i := range nodes {
+			nodes[i] = bootNode(t, addrs[i], dirs[i], master)
+		}
+	}
+	stopAll := func() {
+		for _, n := range nodes {
+			d := n.stop(t)
+			assert.Less(t, d, 2*time.Second, "shutdown of %s was not prompt", n.addr)
+		}
+	}
+	chunkPath := func(node int, h uint64) string { return filepath.Join(dirs[node], fmt.Sprintf("%d.chunk", h)) }
+
+	boot()
+	mt := hive.NewTCPTransport() // plays both master and client
+	t.Cleanup(func() { mt.Close() })
+
+	// master: create every chunk on every node at version 1, node 0 is the primary
+	for h := uint64(1); h <= nChunks; h++ {
+		for _, a := range addrs {
+			requireOK(t, rpc(t, mt, a, updateMsg(h, 1)))
+		}
+		requireOK(t, rpc(t, mt, addrs[0], grantMsg(h)))
+	}
+
+	// 64 buffered writes: 16 chunks x 4 record appends, all pushed concurrently
+	type write struct {
+		id     uint32
+		h      uint64
+		data   []byte
+		offset int64
+	}
+	writes := make([]write, nChunks*writesPerChunk)
+	for i := range writes {
+		writes[i] = write{id: uint32(i + 1), h: uint64(i%nChunks) + 1, data: pseudoData(i+1, recSize)}
+	}
+	for i, err := range runConcurrent(len(writes), func(i int) error {
+		w := writes[i]
+		return pushWrite(mt, addrs[0], &messages.Client_WriteStreamMetadata{
+			BufferId: w.id, ChunkId: w.h, Offset: -1, Size: recSize, OriginAddr: "client", ForwardList: addrs[:],
+		}, w.data)
+	}) {
+		require.NoError(t, err, "push %d", i)
+	}
+
+	// commit them all
+	for i, err := range runConcurrent(len(writes), func(i int) error {
+		w := &writes[i]
+		res, err := rpcErr(mt, addrs[0], commitMsg(w.id, w.h, -1, addrs[1], addrs[2]))
+		if err != nil {
+			return err
+		}
+		w.offset, err = ackOffsetErr(res)
+		return err
+	}) {
+		require.NoError(t, err, "commit %d", i)
+	}
+
+	expected := map[uint64][]byte{}
+	used := map[uint64]map[int64]bool{}
+	for h := uint64(1); h <= nChunks; h++ {
+		expected[h] = make([]byte, writesPerChunk*recSize)
+		used[h] = map[int64]bool{}
+	}
+	for _, w := range writes {
+		require.Zero(t, w.offset%recSize, "appends must be contiguous")
+		require.Less(t, w.offset, int64(writesPerChunk*recSize))
+		require.False(t, used[w.h][w.offset], "two appends landed on the same offset")
+		used[w.h][w.offset] = true
+		copy(expected[w.h][w.offset:], w.data)
+	}
+	for h, want := range expected {
+		for i := range dirs {
+			require.True(t, bytes.Equal(want, mustRead(t, chunkPath(i, h))), "chunk %d on node %d differs", h, i)
+		}
+	}
+
+	// instantaneous clean shutdown, then reboot on the same dirs and ports
+	stopAll()
+	boot()
+
+	// every chunk reads back, from every replica
+	for h, want := range expected {
+		for _, a := range addrs {
+			got, err := readChunkStream(mt, a, h, uint32(len(want)))
+			require.NoError(t, err, "read chunk %d from %s", h, a)
+			require.True(t, bytes.Equal(want, got), "chunk %d from %s differs", h, a)
+		}
+	}
+
+	// delete a chunk on node 0
+	p, err := mt.Dial(context.Background(), addrs[0])
+	require.NoError(t, err)
+	require.NoError(t, p.Send(context.Background(), msgOf(
+		uint8(messages.Master_MESSAGE_TYPE_DELETE_CHUNK), &messages.Master_DeleteChunk{Handle: 1})))
+	require.Eventually(t, func() bool {
+		return !exists(chunkPath(0, 1)) &&
+			!exists(filepath.Join(dirs[0], "1.sum")) &&
+			!exists(filepath.Join(dirs[0], "1.ver"))
+	}, waitFor, 20*time.Millisecond)
+	_, err = readChunkStream(mt, addrs[0], 1, 100)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unavailable")
+
+	// re-replicate it from node 1
+	requireOK(t, rpc(t, mt, addrs[0], replicateMsg(1, 1, addrs[1])))
+	assert.True(t, bytes.Equal(expected[1], mustRead(t, chunkPath(0, 1))))
+	got, err := readChunkStream(mt, addrs[0], 1, uint32(len(expected[1])))
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(expected[1], got))
+
+	stopAll()
+}
