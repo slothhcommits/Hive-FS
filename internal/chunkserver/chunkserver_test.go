@@ -1136,3 +1136,120 @@ func TestLeaseGrantHandler(t *testing.T) {
 	})
 }
 
+// ============================================================ localCopyHandler
+
+func TestLocalCopyHandler(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("source does not exist", func(t *testing.T) {
+		cs := newTestServer(t)
+		requireErrCode(t, cs.localCopyHandler(copyMsg(1, 2)), messages.Error_CODE_UNAVAILABLE)
+	})
+
+	t.Run("source busy during re-replication", func(t *testing.T) {
+		cs := newTestServer(t)
+		release := stallReplication(t, cs, 60)
+		requireBusy(t, cs.localCopyHandler(copyMsg(60, 61)))
+		_, ok := chunkOf(cs, 61)
+		assert.False(t, ok)
+		release()
+	})
+
+	t.Run("source busy during primary write", func(t *testing.T) {
+		cs := newTestServer(t)
+		release := stallPrimary(t, cs, 62)
+		requireBusy(t, cs.localCopyHandler(copyMsg(62, 63)))
+		_, ok := chunkOf(cs, 63)
+		assert.False(t, ok)
+		release()
+	})
+
+	t.Run("source busy during secondary write", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 64, 1, nil)
+		holdChunk(t, c)
+		requireBusy(t, cs.localCopyHandler(copyMsg(64, 65)))
+		_, ok := chunkOf(cs, 65)
+		assert.False(t, ok)
+	})
+
+	t.Run("destination exists", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 1, pseudoData(1, 100))
+		seedChunk(t, cs, 2, 1, nil)
+		ack := requireErrCode(t, cs.localCopyHandler(copyMsg(1, 2)), messages.Error_CODE_EXISTS)
+		assert.Contains(t, ack.Err.Message, "chunk exists")
+	})
+
+	t.Run("success path", func(t *testing.T) {
+		cs := newTestServer(t)
+		data := pseudoData(3, 2*blockSize+5000)
+		seedChunk(t, cs, 1, 3, data)
+
+		requireOK(t, cs.localCopyHandler(copyMsg(1, 2)))
+
+		dst, ok := chunkOf(cs, 2)
+		require.True(t, ok)
+		assert.Equal(t, data, mustRead(t, cs.store.makeChunkPath(2)))
+		tablesEqual(t, dst.checksums.table, tableFor(data))
+		assert.Equal(t, encodeTable(tableFor(data)), mustRead(t, cs.store.makeChecksumPath(2)))
+		// the source is untouched
+		assert.Equal(t, data, mustRead(t, cs.store.makeChunkPath(1)))
+	})
+}
+
+// ======================================================== re-replication
+
+func TestReplication(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("non existent handle", func(t *testing.T) {
+		src, dst := newTestServer(t), newTestServer(t)
+		serve(t, src)
+		requireErrCode(t, dst.replicationHandler(replicateMsg(71, 1, src.ListenAddr)), messages.Error_CODE_UNAVAILABLE)
+		_, ok := chunkOf(dst, 71)
+		assert.False(t, ok)
+		assert.NoFileExists(t, dst.store.makeChunkPath(71))
+	})
+
+	t.Run("bad version", func(t *testing.T) {
+		src, dst := newTestServer(t), newTestServer(t)
+		seedChunk(t, src, 72, 3, pseudoData(1, 100))
+		serve(t, src)
+		ack := requireErrCode(t, dst.replicationHandler(replicateMsg(72, 2, src.ListenAddr)), messages.Error_CODE_OP_FAILED)
+		assert.Contains(t, ack.Err.Message, "bad request")
+		_, ok := chunkOf(dst, 72)
+		assert.False(t, ok)
+		assert.NoFileExists(t, dst.store.makeChunkPath(72))
+	})
+
+	t.Run("source busy mid mutation", func(t *testing.T) {
+		src, dst := newTestServer(t), newTestServer(t)
+		c := seedChunk(t, src, 73, 1, pseudoData(1, 100))
+		serve(t, src)
+		holdChunk(t, c)
+		requireBusy(t, dst.replicationHandler(replicateMsg(73, 1, src.ListenAddr)))
+		_, ok := chunkOf(dst, 73)
+		assert.False(t, ok)
+	})
+
+	t.Run("success path", func(t *testing.T) {
+		src, dst := newTestServer(t), newTestServer(t)
+		data := pseudoData(5, 2*blockSize+5000)
+		seedChunk(t, src, 69, 9, data)
+		serve(t, src)
+
+		requireOK(t, dst.replicationHandler(replicateMsg(69, 9, src.ListenAddr)))
+
+		c, ok := chunkOf(dst, 69)
+		require.True(t, ok)
+		assert.Equal(t, data, mustRead(t, dst.store.makeChunkPath(69)))
+		tablesEqual(t, c.checksums.table, tableFor(data))
+		assert.Equal(t, encodeTable(tableFor(data)), mustRead(t, dst.store.makeChecksumPath(69)))
+		v, ok := versionOf(dst, 69)
+		assert.True(t, ok)
+		assert.Equal(t, uint32(9), v)
+		assert.Equal(t, uint32(9), rawVersion(t, dst.store, 69))
+	})
+}
+
