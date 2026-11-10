@@ -1790,3 +1790,406 @@ func TestStreamHandler_Chain(t *testing.T) {
 	})
 }
 
+// ============================================================ primaryWriteHandler
+
+type replicaSet struct {
+	h  uint64
+	p  *chunkserver
+	ss []*chunkserver
+}
+
+func newReplicaSet(t *testing.T, h uint64, data []byte, nSec int) *replicaSet {
+	t.Helper()
+	rs := &replicaSet{h: h, p: newTestServer(t)}
+	seedChunk(t, rs.p, h, 2, data)
+	grantLease(rs.p, h, time.Now())
+	for i := 0; i < nSec; i++ {
+		s := newTestServer(t)
+		seedChunk(t, s, h, 2, data)
+		serve(t, s)
+		rs.ss = append(rs.ss, s)
+	}
+	return rs
+}
+
+func (rs *replicaSet) all() []*chunkserver { return append([]*chunkserver{rs.p}, rs.ss...) }
+
+func (rs *replicaSet) addrs() []string {
+	var out []string
+	for _, s := range rs.ss {
+		out = append(out, s.ListenAddr)
+	}
+	return out
+}
+
+func (rs *replicaSet) push(id uint32, data []byte) {
+	for _, cs := range rs.all() {
+		putBuffer(cs, id, rs.h, data, true)
+	}
+}
+
+func (rs *replicaSet) commit(id uint32, offset int64) *hive.Message {
+	return rs.p.primaryWriteHandler(commitMsg(id, rs.h, offset, rs.addrs()...))
+}
+
+func (rs *replicaSet) requireReplicas(t *testing.T, want []byte, wantCtr uint64) {
+	t.Helper()
+	for i, cs := range rs.all() {
+		got := mustRead(t, cs.store.makeChunkPath(rs.h))
+		require.True(t, bytes.Equal(want, got), "replica %d content differs", i)
+		c, ok := chunkOf(cs, rs.h)
+		require.True(t, ok)
+		tablesEqual(t, c.checksums.table, tableFor(want))
+		assert.Equal(t, encodeTable(tableFor(want)), mustRead(t, cs.store.makeChecksumPath(rs.h)), "replica %d checksum file", i)
+		assert.Equal(t, wantCtr, ctrOf(c), "replica %d ctr", i)
+	}
+}
+
+func TestPrimaryWrite_BadRequests(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(1, 100_000)
+
+	t.Run("chunk unavailable", func(t *testing.T) {
+		cs := newTestServer(t)
+		ack := requireErrCode(t, cs.primaryWriteHandler(commitMsg(1, 999, 0)), messages.Error_CODE_UNAVAILABLE)
+		assert.Contains(t, ack.Err.Message, "chunk unavailable")
+	})
+
+	t.Run("buffer unavailable", func(t *testing.T) {
+		rs := newReplicaSet(t, 1, data, 0)
+		ack := requireErrCode(t, rs.commit(1, 0), messages.Error_CODE_UNAVAILABLE)
+		assert.Contains(t, ack.Err.Message, "buffer unavailable")
+	})
+
+	t.Run("lease absent", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, data)
+		putBuffer(cs, 1, 1, []byte("x"), true)
+		requireErrCode(t, cs.primaryWriteHandler(commitMsg(1, 1, 0)), messages.Error_CODE_CHUNKSERVER_LEASE_UNAVAILABLE)
+	})
+
+	t.Run("lease expired", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, data)
+		grantLease(cs, 1, time.Now().Add(-leaseTimeout-time.Second))
+		putBuffer(cs, 1, 1, []byte("x"), true)
+		requireErrCode(t, cs.primaryWriteHandler(commitMsg(1, 1, 0)), messages.Error_CODE_CHUNKSERVER_LEASE_UNAVAILABLE)
+		_, ok := leaseOf(cs, 1)
+		assert.False(t, ok, "an expired lease is dropped")
+	})
+
+	t.Run("overwrite overflows the chunk", func(t *testing.T) {
+		rs := newReplicaSet(t, 1, data, 0)
+		rs.push(1, pseudoData(2, 100))
+		requireErrCode(t, rs.commit(1, maxChunkSize-50), messages.Error_CODE_BAD_REQUEST)
+		_, ok := bufferOf(rs.p, 1)
+		assert.False(t, ok, "the buffer is consumed even on failure")
+		assert.Equal(t, data, mustRead(t, rs.p.store.makeChunkPath(1)))
+	})
+}
+
+func TestPrimaryWrite_BadChecksums(t *testing.T) {
+	leakCheck(t)
+	cs := newTestServer(t)
+	data := pseudoData(1, 100_000)
+	seedChunk(t, cs, 1, 2, data)
+	grantLease(cs, 1, time.Now())
+	corruptByte(t, cs.store.makeChunkPath(1), 71_000)
+
+	var got atomic.Int64
+	sec := newFakePeer(t, func(r hive.Request) {
+		got.Add(1)
+		r.Respond(writeAckMsg(true, ""))
+	})
+	putBuffer(cs, 5, 1, pseudoData(2, 5000), true)
+
+	ack := requireErrCode(t, cs.primaryWriteHandler(commitMsg(5, 1, 70_000, sec.addr)), messages.Error_CODE_OP_FAILED)
+	assert.Contains(t, ack.Err.Message, "file corrupt")
+	_, ok := chunkOf(cs, 1)
+	assert.False(t, ok, "a corrupt chunk is deleted")
+	assert.Zero(t, got.Load(), "no secondary may be contacted")
+}
+
+func testPrimarySecondaryFailure(t *testing.T, offset int64) {
+	t.Helper()
+	cs := newTestServer(t)
+	data := pseudoData(1, 100_000)
+	c := seedChunk(t, cs, 1, 2, data)
+	grantLease(cs, 1, time.Now())
+
+	okPeer := newFakePeer(t, func(r hive.Request) { r.Respond(writeAckMsg(true, "")) })
+	badPeer := newFakePeer(t, func(r hive.Request) { r.Respond(writeAckMsg(false, "boom")) })
+	putBuffer(cs, 5, 1, pseudoData(2, 3000), true)
+
+	ack := requireErrCode(t, cs.primaryWriteHandler(commitMsg(5, 1, offset, okPeer.addr, badPeer.addr)), messages.Error_CODE_CHUNKSERVER_INCONSISTENT)
+	assert.Contains(t, ack.Err.Message, "boom")
+	assert.Contains(t, ack.Err.Message, "operation failed")
+
+	// the primary applies last, so it applied nothing
+	assert.Equal(t, data, mustRead(t, cs.store.makeChunkPath(1)))
+	assert.Zero(t, ctrOf(c))
+	_, ok := bufferOf(cs, 5)
+	assert.False(t, ok)
+}
+
+func TestPrimaryWrite_Overwrite_SecondaryFailure(t *testing.T) {
+	leakCheck(t)
+	testPrimarySecondaryFailure(t, 70_000)
+}
+
+func TestPrimaryWrite_Overwrite_Success(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(1, 100_000)
+	rs := newReplicaSet(t, 1, data, 2)
+	buf := pseudoData(2, 5000)
+	rs.push(7, buf)
+
+	res := rs.commit(7, 70_000)
+	assert.EqualValues(t, 70_000, ackOffset(t, res))
+	rs.requireReplicas(t, spliceAt(data, 70_000, buf), 1)
+	for _, cs := range rs.all() {
+		_, ok := bufferOf(cs, 7)
+		assert.False(t, ok, "buffers are consumed by the commit")
+	}
+}
+
+func testPrimaryRepair(t *testing.T, offset int64, wantOffset int64) {
+	t.Helper()
+	data := pseudoData(1, 100_000)
+	rs := newReplicaSet(t, 80, data, 2)
+	buf := pseudoData(99, 3000)
+	rs.push(5, buf)
+
+	// the second secondary holds a live lease: it rejects the first commit and drops the lease
+	grantLease(rs.ss[1], 80, time.Now())
+	ack := requireErrCode(t, rs.commit(5, offset), messages.Error_CODE_CHUNKSERVER_INCONSISTENT)
+	assert.Contains(t, ack.Err.Message, "lease conflict")
+
+	// the region now differs across replicas
+	assert.Equal(t, data, mustRead(t, rs.p.store.makeChunkPath(80)))
+	assert.Equal(t, data, mustRead(t, rs.ss[1].store.makeChunkPath(80)))
+	assert.NotEqual(t, data, mustRead(t, rs.ss[0].store.makeChunkPath(80)))
+
+	// the client retries the whole sequence: push again, commit again
+	rs.push(5, buf)
+	res := rs.commit(5, offset)
+	assert.Equal(t, wantOffset, ackOffset(t, res))
+
+	var want []byte
+	if offset == -1 {
+		want = append(slices.Clone(data), buf...)
+	} else {
+		want = spliceAt(data, int(offset), buf)
+	}
+	rs.requireReplicas(t, want, 1)
+}
+
+func TestPrimaryWrite_Overwrite_InconsistentRegionRepair(t *testing.T) {
+	leakCheck(t)
+	testPrimaryRepair(t, 70_000, 70_000)
+}
+
+func TestPrimaryWriteRecordAppend_PadsAtChunkEnd(t *testing.T) {
+	leakCheck(t)
+	rs := newReplicaSet(t, 1, pseudoData(1, 1000), 1)
+	for _, cs := range rs.all() {
+		require.NoError(t, os.Truncate(cs.store.makeChunkPath(1), maxChunkSize-50))
+	}
+	rs.push(3, pseudoData(2, 100))
+
+	requireErrCode(t, rs.commit(3, -1), messages.Error_CODE_OVERFLOW)
+
+	zeroBlock := crc32.Checksum(make([]byte, blockSize), castagnoli)
+	for i, cs := range rs.all() {
+		path := cs.store.makeChunkPath(1)
+		fi, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.EqualValues(t, maxChunkSize, fi.Size(), "replica %d size", i)
+		assert.Equal(t, make([]byte, 50), readTail(t, path, 50), "replica %d pad", i)
+
+		c, ok := chunkOf(cs, 1)
+		require.True(t, ok)
+		assert.Len(t, c.checksums.table, blocksPerChunk)
+		assert.Equal(t, zeroBlock, c.checksums.table[blocksPerChunk-1])
+		assert.EqualValues(t, 1, ctrOf(c), "replica %d ctr", i)
+	}
+}
+
+func TestPrimaryWriteRecordAppend_ChunkFull(t *testing.T) {
+	leakCheck(t)
+	rs := newReplicaSet(t, 1, pseudoData(1, 1000), 1)
+	for _, cs := range rs.all() {
+		require.NoError(t, os.Truncate(cs.store.makeChunkPath(1), maxChunkSize))
+	}
+	rs.push(3, pseudoData(2, 100))
+
+	ack := requireErrCode(t, rs.commit(3, -1), messages.Error_CODE_OVERFLOW)
+	assert.Contains(t, ack.Err.Message, "chunk full")
+	for _, cs := range rs.all() {
+		fi, err := os.Stat(cs.store.makeChunkPath(1))
+		require.NoError(t, err)
+		assert.EqualValues(t, maxChunkSize, fi.Size())
+		c, _ := chunkOf(cs, 1)
+		assert.Zero(t, ctrOf(c))
+	}
+}
+
+func TestPrimaryWriteRecordAppend_SecondaryFailure(t *testing.T) {
+	leakCheck(t)
+	testPrimarySecondaryFailure(t, -1)
+}
+
+func TestPrimaryWriteRecordAppend_Success(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(1, 100_000)
+	rs := newReplicaSet(t, 1, data, 2)
+	buf := pseudoData(2, 4000)
+	rs.push(7, buf)
+
+	res := rs.commit(7, -1)
+	assert.EqualValues(t, 100_000, ackOffset(t, res))
+	rs.requireReplicas(t, append(slices.Clone(data), buf...), 1)
+}
+
+func TestPrimaryWriteRecordAppend_InconsistentRegionRepair(t *testing.T) {
+	leakCheck(t)
+	testPrimaryRepair(t, -1, 100_000)
+}
+
+// ========================================================= secondaryWriteHandler
+
+func TestSecondaryWriteHandler(t *testing.T) {
+	leakCheck(t)
+	const h = uint64(1)
+	data := pseudoData(1, 100_000)
+
+	setup := func(t *testing.T) (*chunkserver, *chunk) {
+		t.Helper()
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, h, 2, data)
+		return cs, c
+	}
+	req := func(id uint32, off int64, sr uint64, pad uint32, ver uint32) *messages.Chunkserver_Write {
+		return &messages.Chunkserver_Write{BufferId: id, ChunkId: h, Offset: off, Sr: sr, PadLength: pad, Version: ver}
+	}
+	do := func(t *testing.T, cs *chunkserver, r *messages.Chunkserver_Write) *messages.Chunkserver_WriteAck {
+		t.Helper()
+		return decodeWriteAck(t, cs.secondaryWriteHandler(msgOf(uint8(messages.Chunkserver_MESSAGE_TYPE_COMMIT_WRITE), r)))
+	}
+	untouched := func(t *testing.T, cs *chunkserver, c *chunk, wantCtr uint64) {
+		t.Helper()
+		assert.Equal(t, data, mustRead(t, cs.store.makeChunkPath(h)), "no mutation")
+		assert.Equal(t, wantCtr, ctrOf(c))
+	}
+
+	t.Run("live lease conflicts", func(t *testing.T) {
+		cs, c := setup(t)
+		grantLease(cs, h, time.Now())
+		putBuffer(cs, 1, h, pseudoData(2, 100), true)
+
+		ack := do(t, cs, req(1, 0, 1, 0, 2))
+		require.NotNil(t, ack.Err)
+		assert.Contains(t, ack.Err.Message, "lease conflict")
+		untouched(t, cs, c, 0)
+		_, ok := leaseOf(cs, h)
+		assert.False(t, ok, "the lease is dropped")
+		_, ok = bufferOf(cs, 1)
+		assert.True(t, ok, "the buffer survives a lease conflict")
+	})
+
+	t.Run("expired lease is dropped and the write proceeds", func(t *testing.T) {
+		cs, c := setup(t)
+		grantLease(cs, h, time.Now().Add(-leaseTimeout-time.Second))
+		buf := pseudoData(2, 100)
+		putBuffer(cs, 1, h, buf, true)
+
+		ack := do(t, cs, req(1, 0, 1, 0, 2))
+		require.Nil(t, ack.Err, "%v", ack.Err)
+		assert.True(t, ack.Success)
+		_, ok := leaseOf(cs, h)
+		assert.False(t, ok)
+		assert.Equal(t, spliceAt(data, 0, buf), mustRead(t, cs.store.makeChunkPath(h)))
+		assert.EqualValues(t, 1, ctrOf(c))
+	})
+
+	t.Run("version mismatch", func(t *testing.T) {
+		cs, c := setup(t)
+		putBuffer(cs, 1, h, pseudoData(2, 100), true)
+		ack := do(t, cs, req(1, 0, 1, 0, 3))
+		require.NotNil(t, ack.Err)
+		assert.Contains(t, ack.Err.Message, "version mismatch")
+		untouched(t, cs, c, 0)
+		_, ok := bufferOf(cs, 1)
+		assert.True(t, ok, "the buffer is untouched on a stale epoch")
+	})
+
+	t.Run("buffer does not exist", func(t *testing.T) {
+		cs, c := setup(t)
+		ack := do(t, cs, req(1, 0, 1, 0, 2))
+		require.NotNil(t, ack.Err)
+		assert.Contains(t, ack.Err.Message, "unavailable")
+		untouched(t, cs, c, 0)
+	})
+
+	t.Run("fresh ctr seeds from the primary", func(t *testing.T) {
+		cs, c := setup(t)
+		buf := pseudoData(2, 100)
+		putBuffer(cs, 1, h, buf, true)
+		ack := do(t, cs, req(1, 0, 5, 0, 2))
+		require.Nil(t, ack.Err, "%v", ack.Err)
+		assert.EqualValues(t, 5, ctrOf(c))
+		assert.Equal(t, spliceAt(data, 0, buf), mustRead(t, cs.store.makeChunkPath(h)))
+	})
+
+	t.Run("missed mutations", func(t *testing.T) {
+		cs, c := setup(t)
+		c.mu.Lock()
+		c.ctr = 3
+		c.mu.Unlock()
+		putBuffer(cs, 1, h, pseudoData(2, 100), true)
+		ack := do(t, cs, req(1, 0, 6, 0, 2))
+		require.NotNil(t, ack.Err)
+		assert.Contains(t, ack.Err.Message, "missed mutations")
+		untouched(t, cs, c, 3)
+	})
+
+	t.Run("pad request", func(t *testing.T) {
+		cs, c := setup(t)
+		putBuffer(cs, 1, h, pseudoData(2, 100), true)
+		ack := do(t, cs, req(1, int64(len(data)), 1, 40, 2))
+		require.Nil(t, ack.Err, "%v", ack.Err)
+
+		want := append(slices.Clone(data), make([]byte, 40)...)
+		assert.Equal(t, want, mustRead(t, cs.store.makeChunkPath(h)))
+		tablesEqual(t, c.checksums.table, tableFor(want))
+		assert.EqualValues(t, 1, ctrOf(c))
+	})
+
+	t.Run("successful commit and retry", func(t *testing.T) {
+		cs, c := setup(t)
+		c.mu.Lock()
+		c.ctr = 2
+		c.mu.Unlock()
+		buf := pseudoData(2, 5000)
+		want := spliceAt(data, 70_000, buf)
+
+		putBuffer(cs, 1, h, buf, true)
+		ack := do(t, cs, req(1, 70_000, 3, 0, 2))
+		require.Nil(t, ack.Err, "%v", ack.Err)
+		assert.True(t, ack.Success)
+		assert.Equal(t, want, mustRead(t, cs.store.makeChunkPath(h)))
+		tablesEqual(t, c.checksums.table, tableFor(want))
+		assert.Equal(t, encodeTable(tableFor(want)), mustRead(t, cs.store.makeChecksumPath(h)))
+		assert.EqualValues(t, 3, ctrOf(c))
+		_, ok := bufferOf(cs, 1)
+		assert.False(t, ok, "the buffer is consumed")
+
+		// the same Sr again is a retry: reapplied, ctr unchanged
+		putBuffer(cs, 1, h, buf, true)
+		ack = do(t, cs, req(1, 70_000, 3, 0, 2))
+		require.Nil(t, ack.Err, "%v", ack.Err)
+		assert.Equal(t, want, mustRead(t, cs.store.makeChunkPath(h)))
+		assert.EqualValues(t, 3, ctrOf(c))
+	})
+}
+
