@@ -30,3 +30,19 @@ When a chunkserver dies, the master notices, finds the chunks that lost a copy, 
 - **Lazy garbage collection** of deleted files
 - **Crash-tolerant master** with a replayable WAL and checkpoints
 - **Stale replica detection** through chunk version numbers
+
+## Highlights
+
+### Hive protocol over TCP
+
+Hive-FS talks over its own protocol, built on TCP.
+
+- **Compact framing.** Every message starts with a fixed 16-byte header (magic, version, flags, request ID, type and payload length), followed by the payload.
+- **Request multiplexing.** Each request carries an ID, so many requests can be in flight on one connection and replies can arrive in any order. A slow reply never blocks the ones behind it.
+
+![Hive protocol frame and request multiplexing](./assets/Highlight-FrameLayout-and-RequestMultiplexing.png)
+
+- **Separate control and data connections.** Small control messages use framed, multiplexed connections. Bulk chunk data goes over its own connection as a raw stream with no framing, and a single CRC32C checksum at the end. Corruption is caught once per transfer, with no per-frame overhead, and a heartbeat never waits behind a 64 MB chunk.
+
+![Control and data connections](IMAGE_PATH_HERE)
+
