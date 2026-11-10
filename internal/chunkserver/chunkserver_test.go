@@ -735,3 +735,176 @@ func TestSendRequest(t *testing.T) {
 	})
 }
 
+// ============================================================== mintNewChunk
+
+func TestMintNewChunk(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("existing handle", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 0, nil)
+		c, err := cs.mintNewChunk(1)
+		assert.ErrorIs(t, err, internal.ErrExists)
+		assert.Nil(t, c)
+	})
+
+	t.Run("new handle", func(t *testing.T) {
+		cs := newTestServer(t)
+		c, err := cs.mintNewChunk(2)
+		require.NoError(t, err)
+
+		got, ok := chunkOf(cs, 2)
+		require.True(t, ok)
+		assert.Same(t, c, got)
+		assert.Equal(t, uint64(2), c.handle)
+
+		v, ok := versionOf(cs, 2)
+		require.True(t, ok)
+		assert.Zero(t, v)
+
+		for _, p := range []string{cs.store.makeChunkPath(2), cs.store.makeChecksumPath(2), cs.store.makeVersionPath(2)} {
+			assert.FileExists(t, p)
+		}
+	})
+}
+
+// ============================================================== deletechunk
+
+func TestDeleteChunk(t *testing.T) {
+	leakCheck(t)
+
+	allGone := func(t *testing.T, cs *chunkserver, h uint64) {
+		t.Helper()
+		_, ok := chunkOf(cs, h)
+		assert.False(t, ok, "chunk set entry")
+		_, ok = versionOf(cs, h)
+		assert.False(t, ok, "version map entry")
+		_, ok = leaseOf(cs, h)
+		assert.False(t, ok, "lease map entry")
+		for _, p := range []string{cs.store.makeChunkPath(h), cs.store.makeChecksumPath(h), cs.store.makeVersionPath(h)} {
+			assert.NoFileExists(t, p)
+		}
+	}
+
+	t.Run("non existing chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		assert.ErrorIs(t, cs.deletechunk(404), fs.ErrNotExist)
+	})
+
+	t.Run("partially existing in memory", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, pseudoData(1, 100))
+		cs.versionMap.Lock()
+		delete(cs.versionMap.entries, 1)
+		cs.versionMap.Unlock()
+
+		assert.NoError(t, cs.deletechunk(1))
+		allGone(t, cs, 1)
+	})
+
+	t.Run("partially existing on disk", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, pseudoData(1, 100))
+		require.NoError(t, os.Remove(cs.store.makeChecksumPath(1)))
+
+		assert.ErrorIs(t, cs.deletechunk(1), fs.ErrNotExist)
+		allGone(t, cs, 1)
+	})
+
+	t.Run("fully existing chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, pseudoData(1, 100))
+		grantLease(cs, 1, time.Now())
+
+		assert.NoError(t, cs.deletechunk(1))
+		allGone(t, cs, 1)
+	})
+}
+
+// ============================================================== verifyChunk
+
+func TestVerifyChunk(t *testing.T) {
+	leakCheck(t)
+	data := pseudoData(1, 2*blockSize+5000)
+
+	t.Run("non existing chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		err := cs.verifyChunk(newChunk(99, newChecksums(99)))
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("bad chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 1, 1, data)
+		corruptByte(t, cs.store.makeChunkPath(1), blockSize+7)
+		assert.ErrorIs(t, cs.verifyChunk(c), internal.ErrFileCorrupt)
+	})
+
+	t.Run("good chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 1, 1, data)
+		assert.NoError(t, cs.verifyChunk(c))
+	})
+}
+
+// ======================================================= version bookkeeping
+
+func TestUpdateChunkVersion(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("non existing chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		assert.ErrorIs(t, cs.updateChunkVersion(1, 2), internal.ErrUnavailable)
+	})
+
+	t.Run("chunk version above the one passed", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 5, nil)
+		assert.ErrorIs(t, cs.updateChunkVersion(1, 3), internal.ErrBadRequest)
+		v, _ := versionOf(cs, 1)
+		assert.Equal(t, uint32(5), v)
+		assert.Equal(t, uint32(5), rawVersion(t, cs.store, 1))
+	})
+
+	t.Run("valid request", func(t *testing.T) {
+		cs := newTestServer(t)
+		c := seedChunk(t, cs, 1, 1, nil)
+		c.mu.Lock()
+		c.ctr = 7
+		c.mu.Unlock()
+
+		require.NoError(t, cs.updateChunkVersion(1, 3))
+		v, _ := versionOf(cs, 1)
+		assert.Equal(t, uint32(3), v)
+		assert.Zero(t, ctrOf(c))
+		assert.Equal(t, uint32(3), rawVersion(t, cs.store, 1))
+	})
+}
+
+func TestDowndateChunkVersion(t *testing.T) {
+	leakCheck(t)
+
+	t.Run("non existing chunk", func(t *testing.T) {
+		cs := newTestServer(t)
+		assert.ErrorIs(t, cs.downdateChunkVersion(1, 2), internal.ErrUnavailable)
+	})
+
+	t.Run("version above the chunk's", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 2, nil)
+		require.NoError(t, cs.downdateChunkVersion(1, 5))
+		v, _ := versionOf(cs, 1)
+		assert.Equal(t, uint32(2), v)
+		assert.Equal(t, uint32(2), rawVersion(t, cs.store, 1))
+	})
+
+	t.Run("valid request", func(t *testing.T) {
+		cs := newTestServer(t)
+		seedChunk(t, cs, 1, 5, nil)
+		require.NoError(t, cs.downdateChunkVersion(1, 3))
+		v, _ := versionOf(cs, 1)
+		assert.Equal(t, uint32(3), v)
+		assert.Equal(t, uint32(3), rawVersion(t, cs.store, 1))
+	})
+}
+
