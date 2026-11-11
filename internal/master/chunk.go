@@ -8,14 +8,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PraveenC2002/gfs/internal/messages"
+	"github.com/slothhcommits/Hive-FS/internal/messages"
 )
 
 const (
-	defaultRepFactor   uint32        = 3
+	defaultRepFactor    uint32        = 3
 	chunkServerDeadline time.Duration = 90 * time.Second
-	leaseDeadline      time.Duration = 60 * time.Second
+	leaseDeadline       time.Duration = 60 * time.Second
 )
+
+type chunkMetadata struct {
+	handle    uint64
+	repFactor uint32
+	version   uint32
+	primary   string
+	srcs      []string
+}
 
 type chunk struct {
 	sync.Mutex     // TODO: this could be inside a lock manager
@@ -208,6 +216,17 @@ func (ct *chunkTable) processHeartbeat(hb *messages.Chunkserver_Heartbeat) *mess
 			for loc, t := range chunk.locations {
 				if !t.IsZero() && time.Since(t) > chunkServerDeadline {
 					delete(chunk.locations, loc)
+
+					// this replica missed whatever was written while it was
+					// away, but its version still matches, so nothing would
+					// stop it re-entering at line 184 when it comes back.
+					// force the lease to look expired so the next write goes
+					// through grantLease, which bumps the version and pushes
+					// it to the replicas that stayed. primary is cleared too,
+					// otherwise the current one just renews it on its next
+					// heartbeat and the chunk never gets a fresh grant.
+					chunk.primary = ""
+					chunk.leaseGrantTime = time.Time{}
 				}
 			}
 
