@@ -226,7 +226,7 @@ func (master *master) readFileHandler(msg *hive.Message) *hive.Message {
 	req := &messages.Client_Read{}
 	err := proto.Unmarshal(msg.Payload, req)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	tx := newTransaction()
@@ -234,13 +234,13 @@ func (master *master) readFileHandler(msg *hive.Message) *hive.Message {
 	file, err := master.namespace.lookup(tx, req.Path)
 	defer master.persistentState.commitTransaction(tx)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 	file.RLock()
 	defer file.RUnlock()
 
-	if req.Idx >= uint32(len(file.chunkHandles)) {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), fmt.Errorf("index out of bounds"))
+	if req.Count == 0 || int(req.Idx) >= len(file.chunkHandles) {
+		return internal.MakeErrMessage(messages.Error_CODE_BAD_REQUEST, fmt.Errorf("index out of bounds"))
 	}
 
 	chunks := []*chunk{}
@@ -248,67 +248,43 @@ func (master *master) readFileHandler(msg *hive.Message) *hive.Message {
 	master.chunkTable.mu.RLock()
 	for _, handle := range file.chunkHandles[int(req.Idx):min(int(req.Idx)+int(req.Count), len(file.chunkHandles))] {
 		chunk, ok := master.chunkTable.entries[handle]
-		if ok {
-			chunks = append(chunks, chunk)
+		if !ok {
+			break
 		}
+		chunks = append(chunks, chunk)
 	}
 	master.chunkTable.mu.RUnlock()
 
 	res := &messages.Master_File{}
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
 		chunk.Lock()
 		res.Chunks = append(res.Chunks, &messages.Master_Chunk{
 			ChunkId:   chunk.id,
 			Version:   chunk.version,
 			Locations: chunk.getLocations(nil),
+			ChunkIdx:  req.Idx + uint32(i),
 		})
 		chunk.Unlock()
 	}
 
-	payload, err := proto.Marshal(res)
-	if err != nil {
-		panic(err)
-	}
-
-	return &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_FILE),
-			Size: uint32(len(payload)),
-		},
-	}
+	return internal.MakeAckMessage(res)
 }
 
 func (master *master) createFileHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_CreateFile{}
 	if err := proto.Unmarshal(msg.Payload, req); err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	tx := newTransaction()
 	if err := master.namespace.create(tx, req.Path); err != nil {
 		tx.rollback()
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 	master.persistentState.commitTransaction(tx)
 
-	payload, err := proto.Marshal(&messages.Ack{
-		Success: true,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	res := &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.MessageType_ACK),
-			Size: uint32(len(payload)),
-		},
-	}
-
-	return res
+	return internal.MakeAckMessage(nil)
 }
 
 func (master *master) addNewChunk(path string, file *node) error {
@@ -411,12 +387,14 @@ func (master *master) copyOnWrite(oldChunk *chunk) (*chunk, error) {
 		master.chunkTable.stagedCreateMu.Unlock()
 		return nil, internal.ErrUnavailable
 	}
+
 	return newChunk, nil
 }
 
-func (master *master) setWriteResponse(chunk *chunk) *hive.Message {
+func (master *master) setWriteResponse(chunk *chunk, idx uint32) *hive.Message {
 
 	sendReplicas := &messages.Master_Chunk{
+		ChunkIdx:    idx,
 		ChunkId:     chunk.id,
 		Version:     chunk.version,
 		Primary:     chunk.primary,
@@ -424,34 +402,21 @@ func (master *master) setWriteResponse(chunk *chunk) *hive.Message {
 		Locations:   chunk.getLocations(nil),
 	}
 
-	payload, err := proto.Marshal(sendReplicas)
-	if err != nil {
-		panic(err)
-	}
-
-	res := &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.Master_MESSAGE_TYPE_CHUNK_REPLICAS),
-			Size: uint32(len(payload)),
-		},
-	}
-
-	return res
+	return internal.MakeAckMessage(sendReplicas)
 }
 
 func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 
 	req := &messages.Client_GetChunkReplicas{}
 	if err := proto.Unmarshal(msg.Payload, req); err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	unlockNamespace := newTransaction()
 
 	file, err := master.namespace.lookup(unlockNamespace, req.Path)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 	defer master.persistentState.commitTransaction(unlockNamespace)
 	file.Lock()
@@ -467,14 +432,14 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 
 	// sparse write, length exceeded
 	if uint32(len(file.chunkHandles)) < req.ChunkIdx {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), fmt.Errorf("length exceeded"))
+		return internal.MakeErrMessage(messages.Error_CODE_BAD_REQUEST, fmt.Errorf("length exceeded"))
 	}
 
 	// add new chunk
 	if uint32(len(file.chunkHandles)) == req.ChunkIdx {
 
 		if err := master.addNewChunk(req.Path, file); err != nil {
-			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+			return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, err)
 		}
 
 		master.chunkTable.mu.RLock()
@@ -483,7 +448,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 
 		chunk.Lock()
 		defer chunk.Unlock()
-		return master.setWriteResponse(chunk)
+		return master.setWriteResponse(chunk, req.ChunkIdx)
 	}
 
 	master.chunkTable.mu.RLock()
@@ -499,7 +464,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 	if chunk.ref > 1 {
 		newChunk, err := master.copyOnWrite(chunk)
 		if err != nil {
-			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+			return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, err)
 		}
 
 		defer func() {
@@ -509,7 +474,7 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 		}()
 
 		if err := master.grantLease(newChunk); err != nil {
-			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+			return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, err)
 		}
 
 		newChunk.version++
@@ -527,14 +492,14 @@ func (master *master) writeHandler(msg *hive.Message) *hive.Message {
 	} else if time.Since(chunk.leaseGrantTime) > leaseDeadline { // lease expired
 		err := master.grantLease(chunk)
 		if err != nil {
-			return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+			return internal.MakeErrMessage(messages.Error_CODE_UNAVAILABLE, err)
 		}
 		tx := newTransaction()
 		chunk.updateVersion(tx, chunk.version+1)
 		master.persistentState.commitTransaction(tx)
 	}
 
-	return master.setWriteResponse(chunk)
+	return master.setWriteResponse(chunk, req.ChunkIdx)
 }
 
 func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
@@ -542,7 +507,7 @@ func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
 	req := &messages.Client_Snapshot{}
 	err := proto.Unmarshal(msg.Payload, req)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	tx := newTransaction()
@@ -550,7 +515,7 @@ func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
 	nodes, err := master.namespace.snapshot(tx, req.Src, req.Dst)
 	if err != nil {
 		tx.rollback()
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 
 	primaryChunkMap := make(map[string][]uint64)
@@ -612,30 +577,14 @@ func (master *master) snapshotHandler(msg *hive.Message) *hive.Message {
 
 	master.persistentState.commitTransaction(tx)
 
-	res := &messages.Ack{
-		Success: true,
-	}
-
-	payload, err := proto.Marshal(res)
-	if err != nil {
-		panic(err)
-	}
-
-	return &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.MessageType_ACK),
-			Size: uint32(len(payload)),
-		},
-	}
-
+	return internal.MakeAckMessage(nil)
 }
 
 func (master *master) updateVersion(chunk *chunk) (map[string]time.Time, error) {
 
 	payload, err := proto.Marshal(&messages.Master_UpdateVersion{
 		Id:      chunk.id,
-		Version: chunk.version+1,
+		Version: chunk.version + 1,
 	})
 
 	if err != nil {
@@ -806,34 +755,19 @@ func (master *master) moveHandler(msg *hive.Message) *hive.Message {
 
 	err := proto.Unmarshal(msg.Payload, req)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	tx := newTransaction()
 	err = master.namespace.move(tx, req.Src, req.Dst)
 	if err != nil {
 		tx.rollback()
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 
 	master.persistentState.commitTransaction(tx)
 
-	res := &messages.Ack{
-		Success: true,
-	}
-
-	payload, err := proto.Marshal(res)
-	if err != nil {
-		panic(err)
-	}
-
-	return &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Size: uint32(len(payload)),
-			Type: uint8(messages.MessageType_ACK),
-		},
-	}
+	return internal.MakeAckMessage(nil)
 }
 
 func (master *master) listHandler(msg *hive.Message) *hive.Message {
@@ -842,30 +776,19 @@ func (master *master) listHandler(msg *hive.Message) *hive.Message {
 
 	err := proto.Unmarshal(msg.Payload, req)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	contents, err := master.namespace.list(req.Path)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 
 	res := &messages.Master_Subtree{
 		Contents: contents,
 	}
 
-	payload, err := proto.Marshal(res)
-	if err != nil {
-		panic(err)
-	}
-
-	return &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Size: uint32(len(payload)),
-			Type: uint8(messages.Master_MESSAGE_TYPE_SUBTREE),
-		},
-	}
+	return internal.MakeAckMessage(res)
 }
 
 func (master *master) deleteHandler(msg *hive.Message) *hive.Message {
@@ -874,34 +797,19 @@ func (master *master) deleteHandler(msg *hive.Message) *hive.Message {
 
 	err := proto.Unmarshal(msg.Payload, req)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	tx := newTransaction()
 	err = master.namespace.delete(tx, req.Path)
 	if err != nil {
 		tx.rollback()
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_OP_FAILED), err)
+		return internal.MakeErrMessage(nsErrCode(err), err)
 	}
 
 	master.persistentState.commitTransaction(tx)
 
-	res := &messages.Ack{
-		Success: true,
-	}
-
-	payload, err := proto.Marshal(res)
-	if err != nil {
-		panic(err)
-	}
-
-	return &hive.Message{
-		Payload: payload,
-		Metadata: hive.Metadata{
-			Type: uint8(messages.MessageType_ACK),
-			Size: uint32(len(payload)),
-		},
-	}
+	return internal.MakeAckMessage(nil)
 }
 
 func (master *master) heartbeatHandler(msg *hive.Message) *hive.Message {
@@ -909,7 +817,7 @@ func (master *master) heartbeatHandler(msg *hive.Message) *hive.Message {
 	hb := &messages.Chunkserver_Heartbeat{}
 	err := proto.Unmarshal(msg.Payload, hb)
 	if err != nil {
-		return internal.MakeErrMessage(uint8(messages.Error_CODE_UNMARSHAL_FAILED), err)
+		return internal.MakeErrMessage(messages.Error_CODE_UNMARSHAL_FAILED, err)
 	}
 
 	master.csr.update(hb)
