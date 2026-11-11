@@ -3,6 +3,7 @@ package master
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -11,11 +12,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/PraveenC2002/gfs/internal/messages"
+	"github.com/slothhcommits/Hive-FS/internal/messages"
 	"google.golang.org/protobuf/proto"
 )
 
-const (
+var (
 	maxLogSize      int64  = 1024 * 1024 * 10
 )
 
