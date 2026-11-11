@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PraveenC2002/gfs/internal"
-	"github.com/PraveenC2002/gfs/internal/hive"
-	"github.com/PraveenC2002/gfs/internal/messages"
+	"github.com/slothhcommits/Hive-FS/internal"
+	"github.com/slothhcommits/Hive-FS/internal/hive"
+	"github.com/slothhcommits/Hive-FS/internal/messages"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,10 +29,10 @@ const (
 )
 
 type MasterOpts struct {
-	isShadow    bool
-	listenAddr  string
-	shadowAddrs []string
-	hivePath    string // defaults to ~/.hiveFS
+	IsShadow    bool
+	ListenAddr  string
+	ShadowAddrs []string
+	HivePath    string // defaults to ~/.hiveFS
 }
 
 type master struct {
@@ -44,17 +44,19 @@ type master struct {
 
 	csr *chunkServerRegistry
 
-	closeCh chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closeCh   chan struct{}
 }
 
-func newMaster(opts *MasterOpts) *master {
+func NewMaster(opts *MasterOpts) *master {
 
-	if opts.hivePath == "" {
+	if opts.HivePath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			panic(err)
 		}
-		opts.hivePath = filepath.Join(home, ".hiveFS")
+		opts.HivePath = filepath.Join(home, ".hiveFS")
 	}
 
 	return &master{
@@ -63,7 +65,7 @@ func newMaster(opts *MasterOpts) *master {
 
 		transport: hive.NewTCPTransport(),
 
-		persistentState: newPersistentState(opts.hivePath),
+		persistentState: newPersistentState(opts.HivePath),
 
 		csr: newChunkServerRegistry(),
 
@@ -78,24 +80,43 @@ func (master *master) Boot(ctx context.Context) error {
 	// replay last checkpoint
 	master.buildState()
 
-	if !master.isShadow {
+	if !master.IsShadow {
+		master.wg.Add(2)
 		go master.garbageCollector()
 		go master.reReplicate()
 	}
 
+	master.wg.Add(1)
 	go master.handleRequests(ctx)
 
-	// ListenAndAccept blocks until the transport is shut down
 	go func() {
 		<-ctx.Done()
-		close(master.closeCh)
-		master.transport.Close()
+		master.Close()
 	}()
 
-	return master.transport.ListenAndAccept(master.listenAddr)
+	// ListenAndAccept blocks until the transport is shut down
+	err := master.transport.ListenAndAccept(master.ListenAddr)
+
+	// also covers a listen failure, where nothing else would tear the loops down
+	master.Close()
+	master.wg.Wait()
+
+	return err
+}
+
+func (master *master) Close() error {
+
+	master.closeOnce.Do(func() {
+		close(master.closeCh)
+		master.transport.Close()
+	})
+
+	return nil
 }
 
 func (master *master) handleRequests(ctx context.Context) {
+
+	defer master.wg.Done()
 
 	reqCh := master.transport.Consume()
 	for {
@@ -104,7 +125,11 @@ func (master *master) handleRequests(ctx context.Context) {
 			if !ok {
 				return
 			}
-			go master.requestRouter(req)
+			master.wg.Add(1)
+			go func() {
+				defer master.wg.Done()
+				master.requestRouter(req)
+			}()
 		case <-ctx.Done():
 			return
 		}
@@ -885,6 +910,8 @@ func (master *master) heartbeatHandler(msg *hive.Message) *hive.Message {
 
 func (master *master) garbageCollector() {
 
+	defer master.wg.Done()
+
 	for {
 
 		txLimit := 10
@@ -1038,6 +1065,8 @@ func (master *master) garbageCollector() {
 }
 
 func (master *master) reReplicate() {
+
+	defer master.wg.Done()
 
 	for {
 
