@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/PraveenC2002/gfs/internal/messages"
+	"github.com/slothhcommits/Hive-FS/internal/messages"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -31,7 +31,7 @@ const (
 	DELETE                           // DELETE "deletedKey" "chunkHandlesLength" "processedChunkHandles"
 
 	// Node metadata mutations
-	APPEND_CHUNK  // APPEND_CHUNK "path" "chunkhandle"
+	APPEND_CHUNK  // APPEND_CHUNK "path" "chunkhandle" "idx"
 	REPLACE_CHUNK // REPLACE_CHUNK "path" "idx" "oldChunkhandle" "newChunkhandle"
 
 	// chunk table mutations
@@ -502,9 +502,17 @@ func (s *persistentState) applyOp(op *messages.Master_OperationRec) {
 		if node, ok := s.namespace.entries[op.Args[0]]; ok {
 			node.Lock()
 			handle := parseUint64(op.Args[1])
-			if !slices.Contains(node.chunkHandles, handle) {
+			idx, err := strconv.Atoi(op.Args[2])
+			if err != nil {
+				panic(err)
+			}
+			// len > idx: already applied (checkpoint is ahead), skip
+			if len(node.chunkHandles) == idx {
 				node.chunkHandles = append(node.chunkHandles, handle)
 			}
+			// else {
+			// 	log.Println("path : ", op.Args[0], "dropped : ", handle, "index : ", idx, " length : ", len(node.chunkHandles))
+			// }
 			node.Unlock()
 		}
 		s.namespace.mu.RUnlock()

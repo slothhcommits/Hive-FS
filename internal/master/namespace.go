@@ -16,8 +16,12 @@ type metadata struct {
 func (m *metadata) appendChunkHandle(tx *transaction, path string, handle uint64) {
 
 	tx.addOperation(&operation{
-		t:    APPEND_CHUNK,
-		args: []string{path, strconv.FormatUint(handle, 10)},
+		t: APPEND_CHUNK,
+		args: []string{
+			path,
+			strconv.FormatUint(handle, 10),
+			strconv.Itoa(len(m.chunkHandles)), // position this append lands at
+		},
 	})
 
 	tx.addFunc(func() {
