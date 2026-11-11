@@ -1,6 +1,7 @@
 package master
 
 import (
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -234,6 +235,10 @@ func (ns *namespace) acquireLocks(lockReqs []*lockReq) (func(), error) {
 	return func() {
 		release(lockReqs)
 	}, nil
+}
+
+func (ns *namespace) makeDeletedPath(path string, time int64) string {
+	return filepath.Join(path, strconv.FormatInt(time, 10))
 }
 
 func (ns *namespace) mkdir(tx *transaction, path string) error {
@@ -731,7 +736,7 @@ func (ns *namespace) delete(tx *transaction, path string) error {
 		ns.mu.Lock()
 		ns.deletedMu.Lock()
 		for _, p := range contents {
-			ns.deleted[p+"/"+strconv.FormatInt(delTime, 10)] = &deletedNode{
+			ns.deleted[ns.makeDeletedPath(p, delTime)] = &deletedNode{
 				deletedAt: delTime,
 				node:      ns.entries[p],
 			}
