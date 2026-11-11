@@ -227,197 +227,103 @@ func (s *persistentState) buildState() {
 	}
 }
 
-func (s *persistentState) commitTransaction(tx *transaction) {
+func (s *persistentState) loadCheckpoint(file *os.File) {
 
-	s.logger.mu.Lock()
-	defer s.logger.mu.Unlock()
-
-	if s.logger.isFull() {
-		newLoghandle := s.logger.newHandle()
-		s.snapshotState(newLoghandle)
-		s.logger.rotateLog(newLoghandle)
+	var handleBuf [8]byte
+	_, err := io.ReadFull(file, handleBuf[:8])
+	if err != nil && !errors.Is(err, io.EOF) {
+		panic(err)
 	}
 
-	s.logger.log(tx)
+	s.chunkHandle.Store(max(binary.BigEndian.Uint64(handleBuf[:]), s.chunkHandle.Load()))
 
-	for _, fn := range tx.exec {
-		fn()
+	s.namespace.mu.Lock()
+	for {
+
+		_, buf, err := readFileSegment(file)
+		if err != nil {
+			panic(err)
+		}
+
+		if len(buf) == 0 {
+			break
+		}
+
+		var rec messages.Master_NamespaceRec
+		err = proto.Unmarshal(buf, &rec)
+		if err != nil {
+			panic(err)
+		}
+
+		node := node{}
+		node.dir = rec.Dir
+
+		if rec.Metadata != nil {
+			node.metadata.chunkHandles = rec.Metadata.ChunkHandles
+		}
+		s.namespace.entries[rec.Path] = &node
+
 	}
-}
-
-func (s *persistentState) snapshotState(handle uint64) {
-
-	// no node or chunk locks: persisted fields are only mutated in exec, under the log lock held by the caller
-	snap := &stateSnapshot{chunkHandle: s.chunkHandle.Load()}
-
-	s.namespace.mu.RLock()
-	snap.namespace = make(map[string]nodeSnap, len(s.namespace.entries))
-	for k, n := range s.namespace.entries {
-		snap.namespace[k] = nodeSnap{dir: n.dir, chunkHandles: n.chunkHandles}
-	}
-	s.namespace.mu.RUnlock()
+	s.namespace.mu.Unlock()
 
 	s.deletedMu.Lock()
-	snap.deleted = make(map[string]deletedSnap, len(s.namespace.deleted))
-	for k, d := range s.namespace.deleted {
-		snap.deleted[k] = deletedSnap{deletedAt: d.deletedAt, dir: d.dir, chunkHandles: d.chunkHandles}
+	for {
+
+		_, buf, err := readFileSegment(file)
+		if err != nil {
+			panic(err)
+		}
+
+		if len(buf) == 0 {
+			break
+		}
+
+		var rec messages.Master_DeletedRec
+		err = proto.Unmarshal(buf, &rec)
+		if err != nil {
+			panic(err)
+		}
+
+		s.namespace.deleted[rec.Key] = &deletedNode{
+			deletedAt: rec.DeletedAt,
+			node: &node{
+				dir:      rec.Dir,
+				metadata: metadata{chunkHandles: rec.ChunkHandles},
+			},
+		}
+
 	}
 	s.deletedMu.Unlock()
 
-	s.chunkTable.mu.RLock()
-	snap.chunkTable = make(map[uint64]chunkSnap, len(s.chunkTable.entries))
-	for k, c := range s.chunkTable.entries {
-		snap.chunkTable[k] = chunkSnap{ref: c.ref, version: c.version, repFactor: c.repFactor}
-	}
-	s.chunkTable.mu.RUnlock()
+	s.chunkTable.mu.Lock()
+	defer s.chunkTable.mu.Unlock()
 
-	go s.flushState(handle, snap)
-}
+	for {
 
-func (s *persistentState) flushState(handle uint64, snap *stateSnapshot) {
+		_, buf, err := readFileSegment(file)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			panic(err)
+		}
 
-	hivePath := s.logger.dir
-
-	file, err := os.Create(filepath.Join(hivePath, "temp.cp"))
-	if err != nil {
-		panic(err)
-	}
-
-	// TODO: checkpoint records aren't checksummed; convert to a streamed protobuf with a CRC trailer
-	const maxMem = 1024 * 1024 * 100
-
-	var buf bytes.Buffer
-
-	err = binary.Write(&buf, binary.BigEndian, snap.chunkHandle)
-	if err != nil {
-		panic(err)
-	}
-
-	for k, n := range snap.namespace {
-
-		rec, err := proto.Marshal(&messages.Master_NamespaceRec{
-			Path: k,
-			Dir:  n.dir,
-			Metadata: &messages.Master_NamespaceRec_Metadata{
-				ChunkHandles: n.chunkHandles,
-			},
-		})
+		var rec messages.Master_ChunktableRec
+		err = proto.Unmarshal(buf, &rec)
 		if err != nil {
 			panic(err)
 		}
 
-		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
-		if err != nil {
-			panic(err)
-		}
-
-		_, err = buf.Write(rec)
-		if err != nil {
-			panic(err)
-		}
-
-		if buf.Len() >= maxMem {
-			writeFile(buf.Bytes(), file)
-			buf.Reset()
+		if rec.Chunk != nil {
+			s.chunkTable.entries[rec.Handle] = &chunk{
+				id:        rec.Handle,
+				ref:       rec.Chunk.Ref,
+				version:   rec.Chunk.Version,
+				repFactor: rec.Chunk.RepFactor,
+				locations: make(map[string]time.Time),
+			}
 		}
 	}
-
-	err = binary.Write(&buf, binary.BigEndian, checkpointDelim)
-	if err != nil {
-		panic(err)
-	}
-
-	writeFile(buf.Bytes(), file)
-	buf.Reset()
-
-	for k, d := range snap.deleted {
-
-		rec, err := proto.Marshal(&messages.Master_DeletedRec{
-			Key:          k,
-			DeletedAt:    d.deletedAt,
-			Dir:          d.dir,
-			ChunkHandles: d.chunkHandles,
-		})
-		if err != nil {
-			panic(err)
-		}
-
-		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
-		if err != nil {
-			panic(err)
-		}
-
-		_, err = buf.Write(rec)
-		if err != nil {
-			panic(err)
-		}
-
-		if buf.Len() >= maxMem {
-			writeFile(buf.Bytes(), file)
-			buf.Reset()
-		}
-	}
-
-	err = binary.Write(&buf, binary.BigEndian, checkpointDelim)
-	if err != nil {
-		panic(err)
-	}
-
-	writeFile(buf.Bytes(), file)
-	buf.Reset()
-
-	for k, c := range snap.chunkTable {
-
-		rec, err := proto.Marshal(&messages.Master_ChunktableRec{
-			Handle: k,
-			Chunk: &messages.Master_ChunktableRec_Chunk{
-				Ref:       c.ref,
-				Version:   c.version,
-				RepFactor: c.repFactor,
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-
-		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
-		if err != nil {
-			panic(err)
-		}
-
-		_, err = buf.Write(rec)
-		if err != nil {
-			panic(err)
-		}
-
-		if buf.Len() >= maxMem {
-			writeFile(buf.Bytes(), file)
-			buf.Reset()
-		}
-	}
-
-	writeFile(buf.Bytes(), file)
-	buf.Reset()
-	if err := file.Close(); err != nil {
-		panic(err)
-	}
-
-	err = os.Rename(
-		file.Name(),
-		filepath.Join(hivePath, strconv.FormatUint(handle, 10)+".cp"),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	dir, err := os.Open(hivePath)
-	if err != nil {
-		panic(err)
-	}
-	if err := dir.Sync(); err != nil {
-		panic(err)
-	}
-	dir.Close()
 }
 
 func (s *persistentState) applyOp(op *messages.Master_OperationRec) {
@@ -600,10 +506,6 @@ func (s *persistentState) applyOp(op *messages.Master_OperationRec) {
 	}
 }
 
-func (s *persistentState) checkSum(data []byte) uint32 {
-	return crc32.Checksum(data, s.crc32Table)
-}
-
 func (s *persistentState) replayLog(file *os.File) int64 {
 
 	var offset int64
@@ -646,103 +548,207 @@ func (s *persistentState) replayLog(file *os.File) int64 {
 	}
 }
 
-func (s *persistentState) loadCheckpoint(file *os.File) {
+func (s *persistentState) commitTransaction(tx *transaction) {
 
-	var handleBuf [8]byte
-	_, err := io.ReadFull(file, handleBuf[:8])
-	if err != nil && !errors.Is(err, io.EOF) {
-		panic(err)
+	s.logger.mu.Lock()
+	defer s.logger.mu.Unlock()
+
+	if s.logger.isFull() {
+		newLoghandle := s.logger.newHandle()
+		snap := s.snapshotState()
+		go s.flushState(strconv.FormatUint(newLoghandle, 10), snap)
+		s.logger.rotateLog(newLoghandle)
 	}
 
-	s.chunkHandle.Store(max(binary.BigEndian.Uint64(handleBuf[:]), s.chunkHandle.Load()))
+	s.logger.log(tx)
 
-	s.namespace.mu.Lock()
-	for {
-
-		_, buf, err := readFileSegment(file)
-		if err != nil {
-			panic(err)
-		}
-
-		if len(buf) == 0 {
-			break
-		}
-
-		var rec messages.Master_NamespaceRec
-		err = proto.Unmarshal(buf, &rec)
-		if err != nil {
-			panic(err)
-		}
-
-		node := node{}
-		node.dir = rec.Dir
-
-		if rec.Metadata != nil {
-			node.metadata.chunkHandles = rec.Metadata.ChunkHandles
-		}
-		s.namespace.entries[rec.Path] = &node
-
+	for _, fn := range tx.exec {
+		fn()
 	}
-	s.namespace.mu.Unlock()
+}
+
+func (s *persistentState) snapshotState() *stateSnapshot {
+
+	// no node or chunk locks: persisted fields are only mutated in exec, under the log lock held by the caller
+	snap := &stateSnapshot{chunkHandle: s.chunkHandle.Load()}
+
+	s.namespace.mu.RLock()
+	snap.namespace = make(map[string]nodeSnap, len(s.namespace.entries))
+	for k, n := range s.namespace.entries {
+		snap.namespace[k] = nodeSnap{dir: n.dir, chunkHandles: n.chunkHandles}
+	}
+	s.namespace.mu.RUnlock()
 
 	s.deletedMu.Lock()
-	for {
-
-		_, buf, err := readFileSegment(file)
-		if err != nil {
-			panic(err)
-		}
-
-		if len(buf) == 0 {
-			break
-		}
-
-		var rec messages.Master_DeletedRec
-		err = proto.Unmarshal(buf, &rec)
-		if err != nil {
-			panic(err)
-		}
-
-		s.namespace.deleted[rec.Key] = &deletedNode{
-			deletedAt: rec.DeletedAt,
-			node: &node{
-				dir:      rec.Dir,
-				metadata: metadata{chunkHandles: rec.ChunkHandles},
-			},
-		}
-
+	snap.deleted = make(map[string]deletedSnap, len(s.namespace.deleted))
+	for k, d := range s.namespace.deleted {
+		snap.deleted[k] = deletedSnap{deletedAt: d.deletedAt, dir: d.dir, chunkHandles: d.chunkHandles}
 	}
 	s.deletedMu.Unlock()
 
-	s.chunkTable.mu.Lock()
-	defer s.chunkTable.mu.Unlock()
+	s.chunkTable.mu.RLock()
+	snap.chunkTable = make(map[uint64]chunkSnap, len(s.chunkTable.entries))
+	for k, c := range s.chunkTable.entries {
+		snap.chunkTable[k] = chunkSnap{ref: c.ref, version: c.version, repFactor: c.repFactor}
+	}
+	s.chunkTable.mu.RUnlock()
 
-	for {
+	return snap
+}
 
-		_, buf, err := readFileSegment(file)
+func (s *persistentState) flushState(name string, snap *stateSnapshot) {
+
+	hivePath := s.logger.dir
+
+	file, err := os.Create(filepath.Join(hivePath, "temp.cp"))
+	if err != nil {
+		panic(err)
+	}
+
+	// TODO: checkpoint records aren't checksummed; convert to a streamed protobuf with a CRC trailer
+	const maxMem = 1024 * 1024 * 100
+
+	var buf bytes.Buffer
+
+	err = binary.Write(&buf, binary.BigEndian, snap.chunkHandle)
+	if err != nil {
+		panic(err)
+	}
+
+	for k, n := range snap.namespace {
+
+		rec, err := proto.Marshal(&messages.Master_NamespaceRec{
+			Path: k,
+			Dir:  n.dir,
+			Metadata: &messages.Master_NamespaceRec_Metadata{
+				ChunkHandles: n.chunkHandles,
+			},
+		})
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
 			panic(err)
 		}
 
-		var rec messages.Master_ChunktableRec
-		err = proto.Unmarshal(buf, &rec)
+		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
 		if err != nil {
 			panic(err)
 		}
 
-		if rec.Chunk != nil {
-			s.chunkTable.entries[rec.Handle] = &chunk{
-				id:        rec.Handle,
-				ref:       rec.Chunk.Ref,
-				version:   rec.Chunk.Version,
-				repFactor: rec.Chunk.RepFactor,
-				locations: make(map[string]time.Time),
-			}
+		_, err = buf.Write(rec)
+		if err != nil {
+			panic(err)
+		}
+
+		if buf.Len() >= maxMem {
+			writeFile(buf.Bytes(), file)
+			buf.Reset()
 		}
 	}
+
+	err = binary.Write(&buf, binary.BigEndian, checkpointDelim)
+	if err != nil {
+		panic(err)
+	}
+
+	writeFile(buf.Bytes(), file)
+	buf.Reset()
+
+	for k, d := range snap.deleted {
+
+		rec, err := proto.Marshal(&messages.Master_DeletedRec{
+			Key:          k,
+			DeletedAt:    d.deletedAt,
+			Dir:          d.dir,
+			ChunkHandles: d.chunkHandles,
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = buf.Write(rec)
+		if err != nil {
+			panic(err)
+		}
+
+		if buf.Len() >= maxMem {
+			writeFile(buf.Bytes(), file)
+			buf.Reset()
+		}
+	}
+
+	err = binary.Write(&buf, binary.BigEndian, checkpointDelim)
+	if err != nil {
+		panic(err)
+	}
+
+	writeFile(buf.Bytes(), file)
+	buf.Reset()
+
+	for k, c := range snap.chunkTable {
+
+		rec, err := proto.Marshal(&messages.Master_ChunktableRec{
+			Handle: k,
+			Chunk: &messages.Master_ChunktableRec_Chunk{
+				Ref:       c.ref,
+				Version:   c.version,
+				RepFactor: c.repFactor,
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		err = binary.Write(&buf, binary.BigEndian, uint32(len(rec)))
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = buf.Write(rec)
+		if err != nil {
+			panic(err)
+		}
+
+		if buf.Len() >= maxMem {
+			writeFile(buf.Bytes(), file)
+			buf.Reset()
+		}
+	}
+
+	writeFile(buf.Bytes(), file)
+	buf.Reset()
+
+	if err := file.Sync(); err != nil {
+		panic(err)
+	}
+
+	if err := file.Close(); err != nil {
+		panic(err)
+	}
+
+	err = os.Rename(
+		file.Name(),
+		filepath.Join(hivePath, name+".cp"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	dir, err := os.Open(hivePath)
+	if err != nil {
+		panic(err)
+	}
+	if err := dir.Sync(); err != nil {
+		panic(err)
+	}
+	dir.Close()
+}
+
+func (s *persistentState) checkSum(data []byte) uint32 {
+	return crc32.Checksum(data, s.crc32Table)
 }
 
 func readFileSegment(f *os.File) (int, []byte, error) {
