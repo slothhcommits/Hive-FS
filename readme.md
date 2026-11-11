@@ -6,10 +6,10 @@
 
 ## Why a Google File System?
 
-- **Easy horizontal scaling:** Capacity and throughput grow by **adding ordinary machines**, because metadata management and storage are decoupled.
-- **Fault tolerance:** Chunks are replicated across machines, so a disk, machine, or rack failure **doesn't lose data or take the system down**.
+- **Easy horizontal scaling:** Capacity and throughput grow by adding ordinary machines, because metadata management and storage are decoupled.
+- **Fault tolerance:** Chunks are replicated across machines, so a disk, machine, or rack failure doesn't lose data or take the system down.
 - **High aggregate throughput:** Clients read and write **directly to many chunkservers in parallel**, so bandwidth scales with the number of servers.
-- **Built for large files:** 64 MB chunks mean **fewer metadata entries and fewer master round trips**, which suits big sequential reads and writes.
+- **Built for large files:** 64 MB chunks mean fewer metadata entries and fewer master round trips, which suits big sequential reads and writes.
 
 ---
 
@@ -17,7 +17,7 @@
 
 Hive-FS stores large files across many ordinary machines and **keeps working when some of them fail**.
 
-A file is cut into 64 MB pieces called **chunks**, and each chunk is copied onto several different machines (**three by default**, configurable per chunk).
+A file is cut into 64 MB pieces called **chunks**, and each chunk is copied onto several different machines (three by default, configurable per chunk).
 
 - **Master server:** Handles system metadata and coordination of chunkservers. It **never handles file data**, so it stays highly available to many clients.
 - **Chunkservers:** Store the chunk copies on disk and serve the actual reads and writes.
@@ -90,7 +90,7 @@ go test -race ./internal/hive/...
 
 <br>
 
-The master is the metadata server of Hive-FS. It decides **where data lives** and **which replica orders each write**. It never handles file data, so it stays small and fast.
+The master is the metadata server of Hive-FS. It decides where data lives and which replica orders each write. It never handles file data, so it stays small and fast.
 
 **It tracks three things:**
 
@@ -115,12 +115,12 @@ Every mutation is written to a checksummed write-ahead log and **fsynced before 
 
 <br>
 
-Chunkservers are the storage layer of Hive-FS. Each one stores chunk replicas on its local disk and **serves reads and writes directly to clients**.
+Chunkservers are the storage layer of Hive-FS. Each one stores chunk replicas on its local disk and serves reads and writes directly to clients.
 
 **Each chunk is stored as:**
 
 - **Chunk file:** The data, up to 64 MB.
-- **Checksums:** One checksum per **64 KB block**.
+- **Checksums:** One checksum per 64 KB block.
 - **Version:** The chunk's version number.
 
 State is rebuilt from disk at boot. In memory, each server keeps its chunk set (with each chunk's checksum table and serial counter), a version map, a lease map, and the buffers for pushed data.
@@ -130,9 +130,9 @@ State is rebuilt from disk at boot. In memory, each server keeps its chunk set (
 - **Receiving data:** The client pushes data, and each server holds it in an **in-memory buffer** while forwarding it to the next replica as it arrives. *Nothing touches disk at this stage*, and unused buffers expire with a TTL.
 - **Committing writes:** The client sends a commit to the **primary**, the replica holding the lease. The primary stamps the write with the next **serial number**, sends it to the secondaries, and applies it locally last, so **every replica applies writes in the same order**. A secondary rejects a write whose version differs from its own, which drops delayed writes from an old lease.
 - **Serving reads:** The checksums of the blocks touched are verified **before any data is returned**. Corruption fails the read, so the client can try another replica. A background **scrubber** also verifies chunks nobody is reading.
-- **Talking to the master:** A **heartbeat every 10 seconds** reports the chunks held and their versions. The reply carries instructions, such as deleting a chunk or pulling a copy from another chunkserver. The master also sends lease grants, revocations and version updates.
+- **Talking to the master:** A heartbeat every 10 seconds reports the chunks held and their versions. The reply carries instructions, such as deleting a chunk or pulling a copy from another chunkserver. The master also sends lease grants, revocations and version updates.
 
-A replica that missed a mutation or holds corrupted data is **detected and dropped from service** instead of serving stale or bad bytes.
+A replica that missed a mutation or holds corrupted data is detected and dropped from service instead of serving stale or bad bytes.
 
 </details>
 
@@ -161,7 +161,7 @@ Each is a **single request to the master**, and works on a whole directory in on
 | `Write(ctx context.Context, path string, offset int64, size uint32, data io.Reader) error` | Writes `size` bytes from `data` at the given offset. |
 | `RecordAppend(ctx context.Context, path string, record *Record) (int64, error)` | Appends a record to the file and returns the offset it landed at. |
 
-**Chunk location cache:** The client keeps a small cache of chunk locations, keyed by **path and chunk index**. Each entry carries the lease expiry returned by the master, and is dropped when the lease runs out or when an operation on that chunk fails. This **saves a master round trip** on repeated access to the same chunk.
+**Chunk location cache:** The client keeps a small cache of chunk locations, keyed by path and chunk index. Each entry carries the lease expiry returned by the master, and is dropped when the lease runs out or when an operation on that chunk fails. This saves a master round trip on repeated access to the same chunk.
 
 ---
 
@@ -191,7 +191,7 @@ A write is a **two-phase operation**: data is pushed to every replica first → 
 
 ![Write-Phase-2](./assets/Write-Phase-2.png)
 
-3. **Phase 2, commit:** The client sends a commit to the primary. The primary **assigns the write a serial number** and sends a commit message with that number to the secondaries. The secondaries flush the buffered data in serial-number order, so **every replica applies writes in the same order**.
+3. **Phase 2, commit:** The client sends a commit to the primary. The primary **assigns the write a serial number** and sends a commit message with that number to the secondaries. The secondaries flush the buffered data in serial-number order, so every replica applies writes in the same order.
 4. **Failure:** If any secondary fails, the primary applies nothing and the client **retries with the same serial number**. If the commit gets no reply, the client reports the region as **inconsistent**.
 
 ---
@@ -204,7 +204,7 @@ The client supplies only the data, and the **primary chooses the offset**. Many 
 
 - **Locate:** The client asks the master for the file's last chunk. The push and commit work as in [Write](#write-operation), with the offset left for the primary to choose.
 - **Result:** Once the chunkservers have written the buffer successfully, the offset chosen by the primary is returned to the client.
-- **Overflow:** If the record doesn't fit, the primary **pads the chunk to full size** on every replica. The client moves to the next chunk and retries, up to a fixed number of attempts. *A record is never split across chunks.*
+- **Overflow:** If the record doesn't fit, the primary pads the chunk to full size on every replica. The client moves to the next chunk and retries, up to a fixed number of attempts. *A record is never split across chunks.*
 - **Failure:** A failed append is retried, so a record can appear more than once on some replicas.
 
 > ⚠️ Appends are **atomic and at-least-once**, so readers must tolerate **padding and duplicates**.
@@ -227,7 +227,7 @@ A snapshot copies a file or a whole directory **instantly**, because no data is 
 
 ## Read operation
 
-A read never involves the master beyond a **metadata lookup**. Data comes straight from a chunkserver.
+A read never involves the master beyond a metadata lookup. Data comes straight from a chunkserver.
 
 - **Locate:** The client converts `(file, offset, length)` into the chunk range it covers and asks the master for each chunk's handle, version and replica locations.
 - **Stream:** For each chunk, the client opens a stream to one replica. The chunkserver **verifies the checksums of the blocks it touches**, then streams the data followed by a single checksum.
@@ -238,7 +238,7 @@ A read never involves the master beyond a **metadata lookup**. Data comes straig
 
 ## Create, List and Move operations
 
-All three are **single requests to the master** and need no chunkserver. Paths are validated, and every operation takes **path locks** to prevent conflicting concurrent operations.
+All three are **single requests to the master** and need no chunkserver. Paths are validated, and every operation takes path locks to prevent conflicting concurrent operations.
 
 To prevent deadlocks between routines, locks are taken in a **fixed order**: first by path depth in the namespace tree, then lexicographically within the same level.
 
@@ -250,7 +250,7 @@ To prevent deadlocks between routines, locks are taken in a **fixed order**: fir
 
 ## Delete operation and Garbage Collection
 
-Deleting is **lazy**, so it never waits on chunkservers.
+Deleting is lazy, so it never waits on chunkservers.
 
 - **Delete:** The master moves the file or directory to a hidden deleted namespace with a timestamp. It disappears from the namespace immediately, and the change is a **single logged transaction**.
 - **Collect:** After a grace period, a background garbage collector decrements the reference count of each chunk the deleted files used, in bounded batches, and removes chunks that reach 0 from the chunk table.
@@ -286,7 +286,7 @@ A background loop on the master keeps every chunk at its **replication factor**.
 ![Handling-Replication](./assets/Handling-Replication.png)
 
 1. **Detect:** Every **30 seconds** the master drops dead chunkservers and compares each chunk's live replica count to its replication factor.
-2. **Under-replicated:** Chunks with the **fewest surviving replicas are repaired first**, a limited number per round. The master picks chunkservers that don't already hold the chunk and tells each to pull a copy from a live replica. Pending requests are tracked, so the same copy isn't requested twice.
+2. **Under-replicated:** Chunks with the fewest surviving replicas are repaired first, a limited number per round. The master picks chunkservers that don't already hold the chunk and tells each to pull a copy from a live replica. Pending requests are tracked, so the same copy isn't requested twice.
 3. **Over-replicated:** The master tells the extra replicas to delete their copy, **never the primary**.
 4. **Lost chunks:** A chunk with no live replica has nothing to copy from and is **skipped**.
 
