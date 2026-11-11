@@ -1117,14 +1117,6 @@ func (master *master) reReplicate() {
 			return chunks[i].id < chunks[j].id
 		})
 
-		type chunkMetadata struct {
-			handle    uint64
-			repFactor uint32
-			version   uint32
-			primary   string
-			srcs      []string
-		}
-
 		under := []*chunkMetadata{}
 		over := []*chunkMetadata{}
 
@@ -1155,6 +1147,7 @@ func (master *master) reReplicate() {
 				primary:   chunk.primary,
 				srcs:      srcs,
 			}
+
 			if rem > chunk.repFactor {
 				over = append(over, cm)
 			} else {
@@ -1164,27 +1157,116 @@ func (master *master) reReplicate() {
 			chunk.Unlock()
 		}
 
-		wg := &sync.WaitGroup{}
-		for _, o := range over {
-			n := uint32(len(o.srcs)) - o.repFactor
+		wg := sync.WaitGroup{}
+		wg.Add(2)
 
-			var addrs []string
-			for _, addr := range o.srcs {
-				if uint32(len(addrs)) == n {
-					break
-				}
-				if addr != o.primary {
-					addrs = append(addrs, addr)
-				}
+		go func() { defer wg.Done(); master.handleOverReplicated(over) }()
+		go func() { defer wg.Done(); master.handleUnderReplicated(under) }()
+
+		wg.Wait()
+
+		select {
+		case <-master.closeCh:
+			return
+		case <-time.After(reReplicationInterval):
+		}
+	}
+}
+
+func (master *master) handleOverReplicated(candidates []*chunkMetadata) {
+
+	wg := &sync.WaitGroup{}
+	for _, cand := range candidates {
+		n := uint32(len(cand.srcs)) - cand.repFactor
+
+		var addrs []string
+		for _, addr := range cand.srcs {
+			if uint32(len(addrs)) == n {
+				break
 			}
+			if addr != cand.primary {
+				addrs = append(addrs, addr)
+			}
+		}
 
-			for _, addr := range addrs {
+		for _, addr := range addrs {
 
+			wg.Add(1)
+			go func(o *chunkMetadata, addr string) {
+				defer wg.Done()
+				req := &messages.Master_DeleteChunk{
+					Handle: o.handle,
+				}
+
+				payload, err := proto.Marshal(req)
+				if err != nil {
+					panic(err)
+				}
+
+				msg := &hive.Message{
+					Payload: payload,
+					Metadata: hive.Metadata{
+						Size: uint32(len(payload)),
+						Type: uint8(messages.Master_MESSAGE_TYPE_DELETE_CHUNK),
+					},
+				}
+
+				master.sendRequest(nil, addr, msg)
+
+				master.chunkTable.mu.RLock()
+				chunk, ok := master.chunkTable.entries[o.handle]
+				master.chunkTable.mu.RUnlock()
+
+				if ok {
+					chunk.Lock()
+					delete(chunk.locations, addr)
+					chunk.Unlock()
+				}
+			}(cand, addr)
+		}
+	}
+
+	wg.Wait()
+}
+
+func (master *master) handleUnderReplicated(candidates []*chunkMetadata) {
+
+	wg := sync.WaitGroup{}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return len(candidates[i].srcs) < len(candidates[j].srcs)
+	})
+
+	intervalLimit := 20
+
+	candidates = candidates[:min(len(candidates), intervalLimit)]
+
+	for _, cand := range candidates {
+
+		// servers already asked to pull this chunk, excluded from placement
+		// so we don't ask the same one twice while its copy is in flight
+		master.chunkTable.repRequestsMu.Lock()
+		pending := slices.Collect(maps.Keys(master.chunkTable.repRequests[cand.handle]))
+		master.chunkTable.repRequestsMu.Unlock()
+
+		needed := int(cand.repFactor) - len(cand.srcs) - len(pending)
+		if needed <= 0 {
+			continue
+		}
+
+		servers, err := master.csr.getServers(uint32(needed), append(slices.Clone(cand.srcs), pending...))
+		if err == nil {
+
+			srcIdx := 0
+
+			for _, server := range servers {
 				wg.Add(1)
-				go func(o *chunkMetadata, addr string) {
+				go func(srcIdx int, server string) {
 					defer wg.Done()
-					req := &messages.Master_DeleteChunk{
-						Handle: o.handle,
+					req := &messages.Master_Replicate{
+						Handle:  cand.handle,
+						Version: cand.version,
+						Src:     cand.srcs[srcIdx%len(cand.srcs)],
 					}
 
 					payload, err := proto.Marshal(req)
@@ -1196,95 +1278,35 @@ func (master *master) reReplicate() {
 						Payload: payload,
 						Metadata: hive.Metadata{
 							Size: uint32(len(payload)),
-							Type: uint8(messages.Master_MESSAGE_TYPE_DELETE_CHUNK),
+							Type: uint8(messages.Master_MESSAGE_TYPE_REPLICATE_CHUNK),
 						},
 					}
 
-					master.sendRequest(nil, addr, msg)
+					master.sendRequest(nil, server, msg)
 
-					master.chunkTable.mu.RLock()
-					chunk, ok := master.chunkTable.entries[o.handle]
-					master.chunkTable.mu.RUnlock()
-
-					if ok {
-						chunk.Lock()
-						delete(chunk.locations, addr)
-						chunk.Unlock()
+					master.chunkTable.repRequestsMu.Lock()
+					if _, ok := master.chunkTable.repRequests[cand.handle]; !ok {
+						master.chunkTable.repRequests[cand.handle] = make(map[string]time.Time)
 					}
-				}(o, addr)
+					master.chunkTable.repRequests[cand.handle][server] = time.Now()
+					master.chunkTable.repRequestsMu.Unlock()
+				}(srcIdx, server)
+				srcIdx++
 			}
 		}
+	}
+	wg.Wait()
+}
 
-		sort.Slice(under, func(i, j int) bool {
-			return len(under[i].srcs) < len(under[j].srcs)
-		})
-
-		intervalLimit := 20
-
-		under = under[:min(len(under), intervalLimit)]
-
-		for _, s := range under {
-
-			// servers already asked to pull this chunk, excluded from placement
-			// so we don't ask the same one twice while its copy is in flight
-			master.chunkTable.repRequestsMu.Lock()
-			pending := slices.Collect(maps.Keys(master.chunkTable.repRequests[s.handle]))
-			master.chunkTable.repRequestsMu.Unlock()
-
-			needed := int(s.repFactor) - len(s.srcs) - len(pending)
-			if needed <= 0 {
-				continue
-			}
-
-			servers, err := master.csr.getServers(uint32(needed), append(slices.Clone(s.srcs), pending...))
-			if err == nil {
-
-				srcIdx := 0
-
-				for _, server := range servers {
-					wg.Add(1)
-					go func(srcIdx int, server string) {
-						defer wg.Done()
-						req := &messages.Master_Replicate{
-							Handle:  s.handle,
-							Version: s.version,
-							Src:     s.srcs[srcIdx%len(s.srcs)],
-						}
-
-						payload, err := proto.Marshal(req)
-						if err != nil {
-							panic(err)
-						}
-
-						msg := &hive.Message{
-							Payload: payload,
-							Metadata: hive.Metadata{
-								Size: uint32(len(payload)),
-								Type: uint8(messages.Master_MESSAGE_TYPE_REPLICATE_CHUNK),
-							},
-						}
-
-						master.sendRequest(nil, server, msg)
-
-						master.chunkTable.repRequestsMu.Lock()
-						if _, ok := master.chunkTable.repRequests[s.handle]; !ok {
-							master.chunkTable.repRequests[s.handle] = make(map[string]time.Time)
-						}
-						master.chunkTable.repRequests[s.handle][server] = time.Now()
-						master.chunkTable.repRequestsMu.Unlock()
-					}(srcIdx, server)
-					srcIdx++
-				}
-
-			}
-		}
-
-		wg.Wait()
-
-		select {
-		case <-master.closeCh:
-			return
-		case <-time.After(reReplicationInterval):
-		}
+func nsErrCode(err error) messages.Error_Code {
+	switch {
+	case errors.As(err, new(*ErrInvalidPath)), errors.As(err, new(*ErrIsFile)):
+		return messages.Error_CODE_BAD_REQUEST
+	case errors.As(err, new(*ErrObjectExist)):
+		return messages.Error_CODE_EXISTS
+	case errors.As(err, new(*ErrNotFound)):
+		return messages.Error_CODE_NOT_FOUND
+	default:
+		return messages.Error_CODE_OP_FAILED
 	}
 }

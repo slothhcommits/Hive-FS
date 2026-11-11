@@ -46,6 +46,7 @@ func newChunk(id uint64) *chunk {
 		locations: make(map[string]time.Time),
 	}
 }
+
 func (c *chunk) getLocations(exclude []string) []string {
 
 	excludeSet := make(map[string]struct{})
