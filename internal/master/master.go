@@ -172,16 +172,37 @@ func (master *master) requestRouter(req hive.Request) {
 
 func (master *master) sendRequest(ctx context.Context, addr string, msg *hive.Message) (*hive.Message, error) {
 
-	peer, err := master.transport.Dial(addr)
-	if err != nil {
-		return nil, err
+	var peer hive.Peer
+	var ch <-chan *hive.Message
+	var err error
+
+	// a failed write evicts the peer, so the one retry dials a fresh connection
+	for attempt := 0; attempt < 2; attempt++ {
+
+		peer, err = master.transport.Dial(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		if ctx == nil {
+			err = peer.Send(nil, msg)
+			if err == nil {
+				return nil, nil
+			}
+			continue
+		}
+
+		// a request the caller already gave up on must not go out
+		if err = ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		ch, err = peer.Request(ctx, msg)
+		if err == nil {
+			break
+		}
 	}
 
-	if ctx == nil {
-		return nil, peer.Send(msg)
-	}
-
-	ch, err := peer.Request(msg)
 	if err != nil {
 		return nil, err
 	}
