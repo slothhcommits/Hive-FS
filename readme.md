@@ -52,7 +52,7 @@ go build ./...
 go build -o bin/master ./cmd/master
 go build -o bin/chunkserver ./cmd/chunkserver
 
-# Run all tests (add -race for the race detector)
+# Run all tests (some e2e tests are flaky so if it fails re-run them)
 go test -race ./...
 
 # Run tests for a single package
@@ -61,6 +61,26 @@ go test -race ./internal/chunkserver/...
 go test -race ./internal/hive/...
 
 ```
+
+## Contents
+
+| Section | What it covers |
+|---|---|
+| [Overview](#overview) | Architecture, master, chunkserver and client |
+| [Communication and Transport](#communication-and-transport) | Custom Wire framing, multiplexing and streams |
+| [Write operation](#write-operation) | Two-phase write through the primary |
+| [Record append](#record-append) | Atomic, at-least-once appends |
+| [Snapshots and Copy-on-Write](#snapshots-and-copy-on-write) | Instant copies with reference counting |
+| [Read operation](#read-operation) | Locating and streaming chunk data |
+| [Create, List and Move operations](#create-list-and-move-operations) | Namespace operations and path locking |
+| [Delete operation and Garbage Collection](#delete-operation-and-garbage-collection) | Lazy deletion and chunk reclamation |
+| [Transactions and Write-Ahead Log (WAL)](#transactions-and-write-ahead-log-wal) | Logging, checkpoints and crash recovery |
+| [Re-replication](#re-replication) | Keeping chunks at their replication factor |
+| [Versions and replica detection](#versions-and-replica-detection) | Detecting stale replicas |
+| [Data integrity](#data-integrity) | Checksums and scrubbing |
+| [How Hive-FS implements the GFS consistency model and failure handling](#how-hive-fs-implements-the-gfs-consistency-model-and-failure-handling) | GFS behaviors mapped to Hive-FS mechanisms |
+| [Limitations](#limitations) | What is not implemented |
+
 ## Overview
 
 ![Architecture diagram](./assets/Hive-FS-Architecture.png)
