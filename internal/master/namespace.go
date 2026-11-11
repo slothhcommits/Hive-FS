@@ -412,7 +412,7 @@ func (ns *namespace) moveNodes(tx *transaction, list []*struct {
 		}
 	}
 	ns.mu.RUnlock()
-	
+
 	for _, ele := range list {
 		tx.addOperation(&operation{
 			t:    MOVE,
@@ -539,7 +539,9 @@ func (ns *namespace) move(tx *transaction, src, dst string) error {
 			}{src: path, dst: newPrefix + strings.TrimPrefix(path, src)})
 		}
 
-		if err := ns.moveNodes(tx, list); err != nil { return err }
+		if err := ns.moveNodes(tx, list); err != nil {
+			return err
+		}
 	}
 
 	tx.addFunc(unlock)
@@ -641,7 +643,6 @@ func (ns *namespace) snapshot(tx *transaction, src, dst string) ([]*node, error)
 
 	case srcNode.dir:
 
-
 		contents := ns.prefixScan(src)
 
 		list := []*struct {
@@ -702,9 +703,9 @@ func (ns *namespace) list(path string) ([]string, error) {
 
 func (ns *namespace) delete(tx *transaction, path string) error {
 
-    if !ns.validatePath(path) {
-        return &ErrInvalidPath{}
-    }
+	if !ns.validatePath(path) {
+		return &ErrInvalidPath{}
+	}
 
 	lockReqs := []*lockReq{{path: path, read: false}}
 

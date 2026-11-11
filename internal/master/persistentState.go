@@ -115,7 +115,7 @@ type persistentState struct {
 	*namespace
 	*chunkTable
 
-	logger         *opLog
+	logger      *opLog
 	chunkHandle atomic.Uint64
 
 	crc32Table *crc32.Table

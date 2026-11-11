@@ -3,7 +3,6 @@ package master
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -17,7 +16,7 @@ import (
 )
 
 var (
-	maxLogSize      int64  = 1024 * 1024 * 10
+	maxLogSize int64 = 1024 * 1024 * 10
 )
 
 type opLog struct {
@@ -40,7 +39,7 @@ func (oplog *opLog) newHandle() uint64 {
 	return oplog.handle.Add(1)
 }
 
-// open creates the log directory and 
+// open creates the log directory and
 // starts a fresh log after the highest existing log or checkpoint handle
 
 func (oplog *opLog) open() {

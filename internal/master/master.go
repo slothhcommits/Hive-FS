@@ -605,26 +605,25 @@ func (master *master) updateVersion(chunk *chunk) (map[string]time.Time, error) 
 	}()
 
 	servers := chunk.getLocations(nil)
-	
+
 	for _, server := range servers {
 
-		msg := &hive.Message{
-			Metadata: hive.Metadata{
-				Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION),
-				Size: uint32(len(payload)),
-			},
-			Payload: payload,
-		}
-
 		wg.Add(1)
-		go func(server string, msg *hive.Message) {
+		go func(server string) {
 			defer wg.Done()
+			msg := &hive.Message{
+				Metadata: hive.Metadata{
+					Type: uint8(messages.Master_MESSAGE_TYPE_UPDATE_VERSION),
+					Size: uint32(len(payload)),
+				},
+				Payload: payload,
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), versionAckTimeout)
 			defer cancel()
 
 			ackMsg, err := master.sendRequest(ctx, server, msg)
-			
+
 			if err == nil && ackMsg.Type == uint8(messages.MessageType_ACK) {
 
 				ack := &messages.Ack{}
@@ -635,8 +634,8 @@ func (master *master) updateVersion(chunk *chunk) (map[string]time.Time, error) 
 					ackedCh <- server
 				}
 			}
-			
-		}(server, msg)
+
+		}(server)
 	}
 
 	wg.Wait()
@@ -667,7 +666,10 @@ func (master *master) grantLease(c *chunk) error {
 	}
 
 	// TODO: Think about what happens to acked chunks in chunkservers if lease grant fails
-	var primary struct{ addr string ; time time.Time}
+	var primary struct {
+		addr string
+		time time.Time
+	}
 	for addr, _ := range acked {
 
 		msg := &hive.Message{
@@ -677,7 +679,7 @@ func (master *master) grantLease(c *chunk) error {
 				Size: uint32(len(payload)),
 			},
 		}
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), grantLeaseTimeout)
 		ackMsg, err := master.sendRequest(ctx, addr, msg)
 		cancel()
@@ -688,14 +690,16 @@ func (master *master) grantLease(c *chunk) error {
 			err = proto.Unmarshal(ackMsg.Payload, ack)
 
 			if err == nil && ack.Success {
-				primary = struct{addr string; time time.Time}{ addr: addr , time: time.Now() }
+				primary = struct {
+					addr string
+					time time.Time
+				}{addr: addr, time: time.Now()}
 				break
 			}
 
 		}
 	}
 
-	
 	if len(primary.addr) == 0 {
 		return internal.ErrOpFailed
 	}
@@ -705,11 +709,11 @@ func (master *master) grantLease(c *chunk) error {
 
 	for addr, _ := range c.locations {
 
-		if _, ok := acked[addr]; !ok { 
+		if _, ok := acked[addr]; !ok {
 			delete(c.locations, addr)
 			continue
 		}
-		
+
 		if addr == primary.addr {
 			c.locations[primary.addr] = primary.time
 			continue
